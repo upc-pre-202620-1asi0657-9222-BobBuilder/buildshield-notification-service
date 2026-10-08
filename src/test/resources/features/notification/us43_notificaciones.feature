@@ -27,13 +27,14 @@ Característica: US43 Notificación de eventos
     Entonces "Luis Ramos" tiene 1 notificación sin leer
     Y "Ana Torres" tiene 1 notificación sin leer
     Y la última notificación de "Ana Torres" dice "Incidencia en ruta: Retraso" y lleva a "/dispatches/{MAN-0001}"
+    Y la última notificación de "Luis Ramos" dice "Incidencia en ruta: Retraso" y lleva a "/dispatches/{MAN-0001}/custody"
 
   Escenario: La recepción con diferencias avisa al almacén de origen y a los administradores
     Cuando "Luis Ramos" confirma la recepción de "MAN-0001" con 1 material fuera de la tolerancia
     Entonces "Rosa Quispe" tiene 1 notificación sin leer
     Y "Ana Torres" tiene 1 notificación sin leer
     Y "Luis Ramos" tiene 0 notificaciones sin leer
-    Y la última notificación de "Rosa Quispe" dice "Recepción con discrepancias" y lleva a "/discrepancies?dispatchId={MAN-0001}"
+    Y la última notificación de "Rosa Quispe" dice "Recepción con discrepancias" y lleva a "/dispatches/{MAN-0001}"
 
   Escenario: Los cambios de la discrepancia avisan a quien corresponde
     Cuando "Rosa Quispe" "responde" la discrepancia de "MAN-0001" abierta por "Luis Ramos" con el texto "Se repone mañana"

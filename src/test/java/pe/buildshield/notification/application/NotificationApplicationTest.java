@@ -87,7 +87,8 @@ class NotificationApplicationTest {
         assertThat(store.notifications.get(0).title()).isEqualTo("Incidencia en ruta: Falla del vehículo");
         assertThat(store.notifications.get(0).body())
                 .isEqualTo("Despacho MAN-0001 hacia Torre Norte: Llanta baja en Km 40");
-        assertThat(store.notifications.get(0).link()).isEqualTo("/dispatches/" + dispatch);
+        assertThat(store.notifications.get(0).link()).isEqualTo("/dispatches/" + dispatch + "/custody");
+        assertThat(store.notifications.get(1).link()).isEqualTo("/dispatches/" + dispatch);
     }
 
     @Test
@@ -98,6 +99,7 @@ class NotificationApplicationTest {
         assertThat(handle(cancelled)).isEqualTo(1);
         assertThat(store.notifications.get(0).body()).endsWith("fue anulado: Pedido duplicado");
         assertThat(store.notifications.get(0).type()).isEqualTo(NotificationType.DISPATCH_CANCELLED);
+        assertThat(store.notifications.get(0).link()).isEqualTo("/dispatches/" + dispatch + "/custody");
     }
 
     @Test
@@ -109,7 +111,7 @@ class NotificationApplicationTest {
         assertThat(created).isEqualTo(2);
         assertThat(store.notifications).extracting(Notification::recipientUserId).containsExactly(rosa, ana);
         assertThat(store.notifications.get(0).body()).contains("2 materiales fuera de la tolerancia");
-        assertThat(store.notifications.get(0).link()).isEqualTo("/discrepancies?dispatchId=" + dispatch);
+        assertThat(store.notifications.get(0).link()).isEqualTo("/dispatches/" + dispatch);
     }
 
     @Test

@@ -38,6 +38,8 @@ import static pe.buildshield.notification.application.NotificationEvents.*;
  *   <li>Incidencia en ruta: encargados de obra de la obra destino y administradores.</li>
  *   <li>Recepción confirmada con materiales fuera de tolerancia: encargados de almacén del almacén de origen y
  *       administradores.</li>
+ *   <li>Enlaces: {@code /reception/{dispatchId}}, {@code /discrepancies/{id}} y {@code /dispatches/{id}}; este último
+ *       se cambia por {@code /dispatches/{id}/custody} para los encargados de obra.</li>
  *   <li>Discrepancia respondida: quien la abrió; escalada: administradores; resuelta o aceptada: encargados de
  *       almacén del almacén de origen y quien la abrió.</li>
  * </ul>
@@ -221,7 +223,7 @@ public class NotificationCommandService {
                 "La recepción del despacho " + dispatch.reference() + " en "
                         + locationName(event, dispatch.worksiteId(), "la obra") + " tiene " + materials
                         + " de la tolerancia.",
-                "/discrepancies?dispatchId=" + dispatch.dispatchId());
+                "/dispatches/" + dispatch.dispatchId());
     }
 
     private int discrepancyChanged(EventEnvelope event, JsonNode payload) {
@@ -294,9 +296,20 @@ public class NotificationCommandService {
         Instant now = clock.instant();
         List<Recipient> targets = audience.recipients();
         notifications.saveAll(targets.stream().map(recipient -> Notification.create(event.organizationId(),
-                recipient.userId(), type, title, body, link, event.eventId(), now)).toList());
+                recipient.userId(), type, title, body, linkFor(recipient, link), event.eventId(), now)).toList());
         sendEmailsAfterCommit(targets, title, body);
         return targets.size();
+    }
+
+    /**
+     * El detalle del despacho ({@code /dispatches/{id}}) es una pantalla de administración y almacén: al encargado de
+     * obra se le lleva al historial de custodia del mismo despacho ({@code /dispatches/{id}/custody}).
+     */
+    static String linkFor(Recipient recipient, String link) {
+        if (Recipient.SITE_MANAGER.equals(recipient.role()) && link.matches("/dispatches/[^/]+")) {
+            return link + "/custody";
+        }
+        return link;
     }
 
     private void sendEmailsAfterCommit(List<Recipient> targets, String subject, String body) {

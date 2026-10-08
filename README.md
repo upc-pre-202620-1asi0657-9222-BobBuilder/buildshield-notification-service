@@ -16,13 +16,15 @@ de los demás contextos (US43). Contrato de la arquitectura: `wiki/informe-tf/pl
 | Evento | Destinatarios | `link` |
 |---|---|---|
 | `DispatchDeparted` (despacho en tránsito) | encargados de obra asignados a la obra destino | `/reception/{dispatchId}` |
-| `DispatchCancelled` | encargados de obra de la obra destino | `/dispatches/{dispatchId}` |
-| `TransitIncidentReported` | encargados de obra de la obra destino y administradores | `/dispatches/{dispatchId}` |
-| `ReceptionConfirmed` con alguna línea `withinTolerance = false` | encargados de almacén del almacén de origen y administradores | `/discrepancies?dispatchId={dispatchId}` |
+| `DispatchCancelled` | encargados de obra de la obra destino | `/dispatches/{dispatchId}/custody` |
+| `TransitIncidentReported` | encargados de obra de la obra destino y administradores | `/dispatches/{dispatchId}` (`/custody` para el encargado de obra) |
+| `ReceptionConfirmed` con alguna línea `withinTolerance = false` | encargados de almacén del almacén de origen y administradores | `/dispatches/{dispatchId}` |
 | `DiscrepancyResponded` | quien la abrió (`openedBy`) | `/discrepancies/{id}` |
 | `DiscrepancyEscalated` | administradores | `/discrepancies/{id}` |
 | `DiscrepancyResolved`, `DiscrepancyAccepted` | encargados de almacén del almacén de origen y quien la abrió | `/discrepancies/{id}` |
 
+- Los enlaces son rutas de la web tal cual. El detalle `/dispatches/{id}` no es para el encargado de obra: a él se le
+  envía `/dispatches/{id}/custody`.
 - Nunca se avisa a quien provocó el evento ni a usuarios desactivados; un evento repetido no duplica avisos
   (`processed_events` y `source_event_id` único por destinatario).
 - Cada aviso se envía también por correo con `SendGridAdapter` después del commit; en local y en pruebas solo se
