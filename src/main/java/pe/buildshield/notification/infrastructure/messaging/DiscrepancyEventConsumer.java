@@ -20,6 +20,6 @@ class DiscrepancyEventConsumer {
 
     @KafkaListener(topics = "${buildshield.messaging.consumes.discrepancy:buildshield.discrepancy}")
     void onMessage(ConsumerRecord<String, String> record) {
-        TenantScopedEvents.process(processor, record, commands::handle);
+        processor.process(record, commands::handle);
     }
 }

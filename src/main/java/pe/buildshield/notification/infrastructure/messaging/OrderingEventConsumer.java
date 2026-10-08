@@ -20,6 +20,6 @@ class OrderingEventConsumer {
 
     @KafkaListener(topics = "${buildshield.messaging.consumes.ordering:buildshield.ordering}")
     void onMessage(ConsumerRecord<String, String> record) {
-        TenantScopedEvents.process(processor, record, commands::handle);
+        processor.process(record, commands::handle);
     }
 }

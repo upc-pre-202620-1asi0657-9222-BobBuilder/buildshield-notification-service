@@ -20,6 +20,6 @@ class IamEventConsumer {
 
     @KafkaListener(topics = "${buildshield.messaging.consumes.iam:buildshield.iam}")
     void onMessage(ConsumerRecord<String, String> record) {
-        TenantScopedEvents.process(processor, record, commands::handle);
+        processor.process(record, commands::handle);
     }
 }

@@ -20,6 +20,6 @@ class OrganizationEventConsumer {
 
     @KafkaListener(topics = "${buildshield.messaging.consumes.organization:buildshield.organization}")
     void onMessage(ConsumerRecord<String, String> record) {
-        TenantScopedEvents.process(processor, record, commands::handle);
+        processor.process(record, commands::handle);
     }
 }
