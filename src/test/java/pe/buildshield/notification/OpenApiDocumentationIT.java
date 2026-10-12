@@ -30,7 +30,9 @@ class OpenApiDocumentationIT {
 
         assertThat(spec.path("paths").fieldNames()).toIterable().contains("/api/v1/notifications",
                 "/api/v1/notifications/unread-count", "/api/v1/notifications/{id}/read",
-                "/api/v1/notifications/read-all");
+                "/api/v1/notifications/read-all", "/api/v1/notifications/recipient-settings",
+                "/api/v1/notifications/recipient-settings/worksites/{worksiteId}",
+                "/api/v1/notifications/recipient-settings/worksites/{worksiteId}/types/{type}");
         assertThat(spec.at("/components/securitySchemes/bearer/scheme").asText()).isEqualTo("bearer");
     }
 }

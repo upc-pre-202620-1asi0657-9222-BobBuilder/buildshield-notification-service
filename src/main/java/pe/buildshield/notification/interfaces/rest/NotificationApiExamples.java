@@ -27,6 +27,89 @@ final class NotificationApiExamples {
     static final String UNREAD_COUNT = """
             {"unreadCount": 3}""";
 
+    static final String WORKSITE_ID = "3a4b5c6d-7e8f-4a9b-8c0d-1e2f3a4b5c6d";
+
+    static final String TYPE_SETTINGS = """
+            {
+              "type": "DISPATCH_IN_TRANSIT",
+              "label": "Despacho en camino",
+              "configured": true,
+              "defaultAudience": "Encargados de obra asignados a la obra",
+              "recipients": [
+                {
+                  "userId": "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                  "fullName": "Luis Ramos",
+                  "email": "luis.ramos@obra.pe",
+                  "role": "SITE_MANAGER",
+                  "active": true
+                },
+                {
+                  "userId": "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d",
+                  "fullName": "Ana Torres",
+                  "email": "ana.torres@obra.pe",
+                  "role": "ADMINISTRATOR",
+                  "active": true
+                }
+              ],
+              "updatedBy": "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d",
+              "updatedAt": "2026-11-02T15:00:00Z"
+            }""";
+
+    static final String WORKSITE_SETTINGS = """
+            {
+              "worksiteId": "3a4b5c6d-7e8f-4a9b-8c0d-1e2f3a4b5c6d",
+              "worksiteName": "Torre Norte",
+              "types": [
+                {
+                  "type": "DISPATCH_IN_TRANSIT",
+                  "label": "Despacho en camino",
+                  "configured": true,
+                  "defaultAudience": "Encargados de obra asignados a la obra",
+                  "recipients": [
+                    {"userId": "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "fullName": "Luis Ramos",
+                     "email": "luis.ramos@obra.pe", "role": "SITE_MANAGER", "active": true}
+                  ],
+                  "updatedBy": "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d",
+                  "updatedAt": "2026-11-02T15:00:00Z"
+                },
+                {
+                  "type": "TRANSIT_INCIDENT",
+                  "label": "Incidencia en ruta",
+                  "configured": false,
+                  "defaultAudience": "Encargados de obra asignados a la obra y administradores",
+                  "recipients": [],
+                  "updatedBy": null,
+                  "updatedAt": null
+                }
+              ],
+              "candidates": [
+                {"userId": "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d", "fullName": "Ana Torres",
+                 "email": "ana.torres@obra.pe", "role": "ADMINISTRATOR", "active": true},
+                {"userId": "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "fullName": "Luis Ramos",
+                 "email": "luis.ramos@obra.pe", "role": "SITE_MANAGER", "active": true}
+              ]
+            }""";
+
+    static final String RECIPIENT_SETTINGS = """
+            [
+              {
+                "worksiteId": "3a4b5c6d-7e8f-4a9b-8c0d-1e2f3a4b5c6d",
+                "worksiteName": "Torre Norte",
+                "setting": {
+                  "type": "DISPATCH_IN_TRANSIT",
+                  "label": "Despacho en camino",
+                  "configured": true,
+                  "defaultAudience": "Encargados de obra asignados a la obra",
+                  "recipients": [
+                    {"userId": "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "fullName": "Luis Ramos",
+                     "email": "luis.ramos@obra.pe", "role": "SITE_MANAGER", "active": true}
+                  ],
+                  "updatedBy": "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d",
+                  "updatedAt": "2026-11-02T15:00:00Z"
+                }
+              }
+            ]""";
+
     private NotificationApiExamples() {
     }
 }
