@@ -32,8 +32,9 @@ class NotificationApplicationTest {
     private final InMemoryNotifications store = new InMemoryNotifications();
     private final List<String> emails = new ArrayList<>();
     private final MutableClock clock = new MutableClock(NOW);
+    private final InMemoryRecipientSettings settings = new InMemoryRecipientSettings();
     private final NotificationCommandService commands = new NotificationCommandService(store, store, store,
-            (to, subject, body) -> emails.add(to + "|" + subject), clock);
+            settings, (to, subject, body) -> emails.add(to + "|" + subject), clock);
     private final NotificationQueryService queries = new NotificationQueryService(store);
 
     private final UUID ana = UUID.randomUUID();

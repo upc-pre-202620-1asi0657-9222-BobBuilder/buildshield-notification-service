@@ -19,4 +19,10 @@ public interface RecipientDirectory {
     List<Recipient> assignedTo(UUID organizationId, UUID locationId, String role);
 
     List<Recipient> withRole(UUID organizationId, String role);
+
+    /**
+     * Quienes pueden recibir avisos de la obra (US45): usuarios activos de la organización, salvo encargados de obra
+     * que no estén asignados a esa obra.
+     */
+    List<Recipient> candidates(UUID organizationId, UUID worksiteId);
 }

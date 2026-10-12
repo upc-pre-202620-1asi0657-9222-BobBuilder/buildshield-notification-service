@@ -9,7 +9,8 @@ import java.util.List;
 public final class TestDatabase {
 
     public static final List<String> TABLES = List.of("notifications", "recipient_projection",
-            "assignment_projection", "location_projection", "dispatch_projection", "processed_events");
+            "assignment_projection", "location_projection", "dispatch_projection", "processed_events",
+            "recipient_settings", "recipient_setting_users");
 
     private TestDatabase() {
     }

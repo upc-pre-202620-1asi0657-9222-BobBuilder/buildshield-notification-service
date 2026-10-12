@@ -74,6 +74,19 @@ class JdbcRecipientDirectory implements RecipientDirectory {
     }
 
     @Override
+    public List<Recipient> candidates(UUID organizationId, UUID worksiteId) {
+        return jdbc.query("""
+                SELECT r.* FROM recipient_projection r
+                WHERE r.organization_id = ? AND r.active
+                  AND (r.role <> 'SITE_MANAGER' OR EXISTS (
+                        SELECT 1 FROM assignment_projection a
+                        WHERE a.organization_id = r.organization_id AND a.user_id = r.user_id
+                          AND a.location_id = ?))
+                ORDER BY r.full_name NULLS LAST, r.user_id
+                """, ROW, organizationId, worksiteId);
+    }
+
+    @Override
     public List<Recipient> withRole(UUID organizationId, String role) {
         return jdbc.query("""
                 SELECT * FROM recipient_projection WHERE organization_id = ? AND role = ? AND active

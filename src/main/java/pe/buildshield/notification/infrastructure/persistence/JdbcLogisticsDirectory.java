@@ -39,6 +39,14 @@ class JdbcLogisticsDirectory implements LogisticsDirectory {
     }
 
     @Override
+    public boolean isWorksite(UUID organizationId, UUID locationId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM location_projection
+                               WHERE organization_id = ? AND location_id = ? AND type = 'WORKSITE')
+                """, Boolean.class, organizationId, locationId));
+    }
+
+    @Override
     public void upsertDispatch(UUID organizationId, UUID dispatchId, String manifestCode, UUID worksiteId,
             UUID warehouseId) {
         jdbc.update("""

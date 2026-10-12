@@ -15,6 +15,8 @@ import pe.buildshield.notification.domain.model.NotificationRepository;
 import pe.buildshield.notification.domain.model.NotificationType;
 import pe.buildshield.notification.domain.model.Recipient;
 import pe.buildshield.notification.domain.model.RecipientDirectory;
+import pe.buildshield.notification.domain.model.RecipientSetting;
+import pe.buildshield.notification.domain.model.RecipientSettingRepository;
 import pe.buildshield.notification.shared.error.ResourceNotFoundException;
 import pe.buildshield.notification.shared.messaging.EventEnvelope;
 import pe.buildshield.notification.shared.tenant.TenantContext;
@@ -22,9 +24,14 @@ import pe.buildshield.notification.shared.tenant.TenantInfo;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static pe.buildshield.notification.application.NotificationEvents.*;
 
@@ -45,6 +52,11 @@ import static pe.buildshield.notification.application.NotificationEvents.*;
  * </ul>
  *
  * Nunca se avisa a quien provocó el evento. Cada aviso va también por correo después del commit.
+ *
+ * <p>US45: si el administrador configuró destinatarios para la obra del evento y ese tipo de aviso, sus usuarios
+ * (activos; los encargados de obra, solo si siguen asignados a la obra) reemplazan a los destinatarios por rol de la
+ * lista anterior. Quien abrió la discrepancia sigue recibiendo los avisos de su caso. Sin configuración, la regla de
+ * arriba.
  */
 @Service
 public class NotificationCommandService {
@@ -62,14 +74,16 @@ public class NotificationCommandService {
     private final NotificationRepository notifications;
     private final RecipientDirectory recipients;
     private final LogisticsDirectory logistics;
+    private final RecipientSettingRepository settings;
     private final EmailPort email;
     private final Clock clock;
 
     public NotificationCommandService(NotificationRepository notifications, RecipientDirectory recipients,
-            LogisticsDirectory logistics, EmailPort email, Clock clock) {
+            LogisticsDirectory logistics, RecipientSettingRepository settings, EmailPort email, Clock clock) {
         this.notifications = notifications;
         this.recipients = recipients;
         this.logistics = logistics;
+        this.settings = settings;
         this.email = email;
         this.clock = clock;
     }
@@ -154,8 +168,9 @@ public class NotificationCommandService {
         if (dispatch == null || dispatch.worksiteId() == null) {
             return 0;
         }
-        Audience audience = new Audience(event.actorId())
-                .add(recipients.assignedTo(event.organizationId(), dispatch.worksiteId(), Recipient.SITE_MANAGER));
+        Audience audience = audience(event, NotificationType.DISPATCH_IN_TRANSIT, dispatch.worksiteId(),
+                () -> recipients.assignedTo(event.organizationId(), dispatch.worksiteId(), Recipient.SITE_MANAGER),
+                null);
         String worksite = locationName(event, dispatch.worksiteId(), "la obra");
         String warehouse = locationName(event, dispatch.warehouseId(), "el almacén");
         return notify(event, audience, NotificationType.DISPATCH_IN_TRANSIT, "Despacho en camino a " + worksite,
@@ -169,8 +184,9 @@ public class NotificationCommandService {
         if (dispatch == null || dispatch.worksiteId() == null) {
             return 0;
         }
-        Audience audience = new Audience(event.actorId())
-                .add(recipients.assignedTo(event.organizationId(), dispatch.worksiteId(), Recipient.SITE_MANAGER));
+        Audience audience = audience(event, NotificationType.DISPATCH_CANCELLED, dispatch.worksiteId(),
+                () -> recipients.assignedTo(event.organizationId(), dispatch.worksiteId(), Recipient.SITE_MANAGER),
+                null);
         String reason = text(payload, "reason");
         return notify(event, audience, NotificationType.DISPATCH_CANCELLED, "Despacho anulado",
                 "El despacho " + dispatch.reference() + " hacia " + locationName(event, dispatch.worksiteId(), "la obra")
@@ -183,11 +199,15 @@ public class NotificationCommandService {
         if (dispatch == null) {
             return 0;
         }
-        Audience audience = new Audience(event.actorId());
-        if (dispatch.worksiteId() != null) {
-            audience.add(recipients.assignedTo(event.organizationId(), dispatch.worksiteId(), Recipient.SITE_MANAGER));
-        }
-        audience.add(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
+        Audience audience = audience(event, NotificationType.TRANSIT_INCIDENT, dispatch.worksiteId(), () -> {
+            List<Recipient> byDefault = new ArrayList<>();
+            if (dispatch.worksiteId() != null) {
+                byDefault.addAll(recipients.assignedTo(event.organizationId(), dispatch.worksiteId(),
+                        Recipient.SITE_MANAGER));
+            }
+            byDefault.addAll(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
+            return byDefault;
+        }, null);
         String type = text(payload, "typeLabel");
         if (type == null) {
             String code = payload.path("type").asText("OTHER");
@@ -212,12 +232,13 @@ public class NotificationCommandService {
         if (outOfTolerance == 0 || dispatch == null) {
             return 0;
         }
-        Audience audience = new Audience(event.actorId());
-        if (dispatch.warehouseId() != null) {
-            audience.add(recipients.assignedTo(event.organizationId(), dispatch.warehouseId(),
-                    Recipient.WAREHOUSE_MANAGER));
-        }
-        audience.add(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
+        Audience audience = audience(event, NotificationType.RECEPTION_WITH_DISCREPANCIES, dispatch.worksiteId(),
+                () -> {
+                    List<Recipient> byDefault = new ArrayList<>(warehouseManagers(event,
+                            dispatch.warehouseId()));
+                    byDefault.addAll(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
+                    return byDefault;
+                }, null);
         String materials = outOfTolerance == 1 ? "1 material fuera" : outOfTolerance + " materiales fuera";
         return notify(event, audience, NotificationType.RECEPTION_WITH_DISCREPANCIES, "Recepción con discrepancias",
                 "La recepción del despacho " + dispatch.reference() + " en "
@@ -236,33 +257,41 @@ public class NotificationCommandService {
         }
         UUID openedBy = uuid(payload, "openedBy");
         UUID warehouseId = uuid(payload, "warehouseId");
-        Audience audience = new Audience(event.actorId());
+        UUID worksiteId = uuid(payload, "worksiteId");
+        if (worksiteId == null) {
+            DispatchInfo dispatch = dispatch(event, payload);
+            worksiteId = dispatch == null ? null : dispatch.worksiteId();
+        }
         NotificationType type;
         String title;
+        Supplier<List<Recipient>> byDefault;
+        Recipient personal = null;
         switch (event.eventType()) {
             case DISCREPANCY_RESPONDED -> {
                 type = NotificationType.DISCREPANCY_RESPONDED;
                 title = "Discrepancia respondida por el almacén";
-                audience.add(opener(event, openedBy));
+                byDefault = List::of;
+                personal = opener(event, openedBy);
             }
             case DISCREPANCY_ESCALATED -> {
                 type = NotificationType.DISCREPANCY_ESCALATED;
                 title = "Discrepancia escalada: requiere tu decisión";
-                audience.add(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
+                byDefault = () -> recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR);
             }
             case DISCREPANCY_RESOLVED -> {
                 type = NotificationType.DISCREPANCY_RESOLVED;
                 title = "Discrepancia resuelta";
-                addWarehouseManagers(event, audience, warehouseId);
-                audience.add(opener(event, openedBy));
+                byDefault = () -> warehouseManagers(event, warehouseId);
+                personal = opener(event, openedBy);
             }
             default -> {
                 type = NotificationType.DISCREPANCY_ACCEPTED;
                 title = "Discrepancia aceptada por la obra";
-                addWarehouseManagers(event, audience, warehouseId);
-                audience.add(opener(event, openedBy));
+                byDefault = () -> warehouseManagers(event, warehouseId);
+                personal = opener(event, openedBy);
             }
         }
+        Audience audience = audience(event, type, worksiteId, byDefault, personal);
         String material = text(payload, "materialName") != null ? text(payload, "materialName") : text(payload, "sku");
         String manifest = text(payload, "manifestCode");
         String detail = text(payload, "text");
@@ -272,10 +301,28 @@ public class NotificationCommandService {
         return notify(event, audience, type, title, body, "/discrepancies/" + discrepancyId);
     }
 
-    private void addWarehouseManagers(EventEnvelope event, Audience audience, UUID warehouseId) {
-        if (warehouseId != null) {
-            audience.add(recipients.assignedTo(event.organizationId(), warehouseId, Recipient.WAREHOUSE_MANAGER));
+    private List<Recipient> warehouseManagers(EventEnvelope event, UUID warehouseId) {
+        return warehouseId == null ? List.of()
+                : recipients.assignedTo(event.organizationId(), warehouseId, Recipient.WAREHOUSE_MANAGER);
+    }
+
+    /**
+     * Destinatarios del aviso: los configurados para la obra y el tipo (US45) o, si no hay configuración, los de la
+     * regla por defecto; más la persona directamente involucrada, si la hay. Sin quien provocó el evento.
+     */
+    private Audience audience(EventEnvelope event, NotificationType type, UUID worksiteId,
+            Supplier<? extends Collection<Recipient>> byDefault, Recipient personal) {
+        Audience audience = new Audience(event.actorId());
+        var setting = worksiteId == null ? Optional.<RecipientSetting>empty()
+                : settings.find(event.organizationId(), worksiteId, type);
+        if (setting.isPresent()) {
+            Set<UUID> chosen = Set.copyOf(setting.get().userIds());
+            audience.add(recipients.candidates(event.organizationId(), worksiteId).stream()
+                    .filter(candidate -> chosen.contains(candidate.userId())).toList());
+        } else {
+            audience.add(byDefault.get());
         }
+        return audience.add(personal);
     }
 
     /** Quien abrió la discrepancia; si la copia local todavía no lo conoce, igual recibe el aviso en la bandeja. */

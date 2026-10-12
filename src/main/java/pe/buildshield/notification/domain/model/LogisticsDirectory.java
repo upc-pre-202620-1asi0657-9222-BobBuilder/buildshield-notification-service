@@ -10,6 +10,9 @@ public interface LogisticsDirectory {
 
     Optional<String> locationName(UUID organizationId, UUID locationId);
 
+    /** La copia local conoce esa obra (tipo {@code WORKSITE}) en la organización. */
+    boolean isWorksite(UUID organizationId, UUID locationId);
+
     /** Completa los datos conocidos del despacho; los nulos no borran lo que ya se sabía. */
     void upsertDispatch(UUID organizationId, UUID dispatchId, String manifestCode, UUID worksiteId, UUID warehouseId);
 

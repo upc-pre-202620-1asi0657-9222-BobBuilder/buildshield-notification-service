@@ -26,6 +26,7 @@ class InMemoryNotifications implements NotificationRepository, RecipientDirector
     final Map<UUID, UUID> userOrganization = new HashMap<>();
     final Map<UUID, UUID[]> assignments = new HashMap<>();
     final Map<UUID, String> locations = new HashMap<>();
+    final Map<UUID, String> locationTypes = new HashMap<>();
     final Map<UUID, DispatchInfo> dispatches = new HashMap<>();
 
     private UUID organization() {
@@ -113,6 +114,22 @@ class InMemoryNotifications implements NotificationRepository, RecipientDirector
     @Override
     public void upsertLocation(UUID organizationId, UUID locationId, String type, String name) {
         locations.put(locationId, name);
+        locationTypes.put(locationId, type);
+    }
+
+    @Override
+    public boolean isWorksite(UUID organizationId, UUID locationId) {
+        return "WORKSITE".equals(locationTypes.get(locationId));
+    }
+
+    @Override
+    public List<Recipient> candidates(UUID organizationId, UUID worksiteId) {
+        return users.values().stream()
+                .filter(r -> r.active() && organizationId.equals(userOrganization.get(r.userId())))
+                .filter(r -> !Recipient.SITE_MANAGER.equals(r.role()) || assignments.values().stream()
+                        .anyMatch(a -> a[0].equals(r.userId()) && a[1].equals(worksiteId)))
+                .sorted(java.util.Comparator.comparing(Recipient::fullName))
+                .toList();
     }
 
     @Override
