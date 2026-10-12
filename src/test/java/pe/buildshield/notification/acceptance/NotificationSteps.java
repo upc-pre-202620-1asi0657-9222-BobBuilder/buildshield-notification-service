@@ -22,7 +22,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static pe.buildshield.notification.acceptance.ApiRequest.get;
+import static pe.buildshield.notification.acceptance.ApiRequest.delete;
 import static pe.buildshield.notification.acceptance.ApiRequest.post;
+import static pe.buildshield.notification.acceptance.ApiRequest.put;
 
 /** Pasos de US43 (notificación de eventos): los hechos llegan por Kafka y la bandeja se consulta por HTTP. */
 public class NotificationSteps {
@@ -191,6 +193,65 @@ public class NotificationSteps {
             }
         });
         assertThat(read).isEmpty();
+    }
+
+    // ---------- US45: destinatarios por obra ----------
+
+    @Cuando("{string} consulta los destinatarios de {string}")
+    public void recipientSettings(String name, String worksite) throws Exception {
+        awaitEvents();
+        signIn(name);
+        session.send(get("/api/v1/notifications/recipient-settings/worksites/" + places.get(worksite)), null);
+    }
+
+    @Entonces("el aviso {string} usa la regla por defecto {string}")
+    public void usesDefault(String type, String audience) throws Exception {
+        session.expectStatus(200);
+        for (JsonNode item : session.body().path("types")) {
+            if (item.path("type").asText().equals(type)) {
+                assertThat(item.path("configured").asBoolean()).isFalse();
+                assertThat(item.path("defaultAudience").asText()).isEqualTo(audience);
+                return;
+            }
+        }
+        throw new AssertionError("No está el aviso " + type);
+    }
+
+    @Entonces("puede elegir a {string}")
+    public void candidates(String names) throws Exception {
+        List<String> found = new ArrayList<>();
+        session.body().path("candidates").forEach(item -> found.add(item.path("fullName").asText()));
+        assertThat(found).containsExactly(names.split(",\\s*"));
+    }
+
+    @Cuando("{string} elige a {string} para el aviso {string} de {string}")
+    public void choose(String name, String chosen, String type, String worksite) throws Exception {
+        awaitEvents();
+        signIn(name);
+        List<UUID> ids = new ArrayList<>();
+        for (String person : chosen.split(",\\s*")) {
+            ids.add(users.get(person));
+        }
+        session.send(put("/api/v1/notifications/recipient-settings/worksites/" + places.get(worksite) + "/types/"
+                + type), Map.of("userIds", ids));
+    }
+
+    @Cuando("{string} vuelve a la regla por defecto del aviso {string} de {string}")
+    public void reset(String name, String type, String worksite) throws Exception {
+        signIn(name);
+        session.send(delete("/api/v1/notifications/recipient-settings/worksites/" + places.get(worksite) + "/types/"
+                + type), null);
+    }
+
+    @Entonces("la respuesta tiene estado {int}")
+    public void responseStatus(int status) {
+        session.expectStatus(status);
+    }
+
+    @Entonces("la respuesta tiene estado {int} con el código {string}")
+    public void responseCode(int status, String code) throws Exception {
+        session.expectStatus(status);
+        assertThat(session.body().path("code").asText()).isEqualTo(code);
     }
 
     private void send(String topic, UUID key, String message) {

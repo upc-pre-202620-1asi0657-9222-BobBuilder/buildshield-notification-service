@@ -27,6 +27,10 @@ public final class ApiRequest {
         return new ApiRequest(HttpMethod.PATCH, path);
     }
 
+    public static ApiRequest delete(String path) {
+        return new ApiRequest(HttpMethod.DELETE, path);
+    }
+
     public static ApiRequest put(String path) {
         return new ApiRequest(HttpMethod.PUT, path);
     }
