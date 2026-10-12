@@ -5,12 +5,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaTemplate;
 import pe.buildshield.notification.application.NotificationCommandService;
 import pe.buildshield.notification.application.NotificationQueryService;
 import pe.buildshield.notification.shared.tenant.TenantContext;
 import pe.buildshield.notification.shared.tenant.TenantInfo;
 import pe.buildshield.notification.support.NotificationIntegrationTest;
+import pe.buildshield.notification.support.KafkaReadiness;
 import pe.buildshield.notification.support.TestDatabase;
 import pe.buildshield.notification.support.TestEvents;
 
@@ -43,9 +45,13 @@ class NotificationMessagingIT {
     @Autowired
     NotificationCommandService commands;
 
+    @Autowired
+    KafkaListenerEndpointRegistry listeners;
+
     @BeforeEach
     void clean() {
         TestDatabase.reset(jdbc);
+        KafkaReadiness.awaitAssignments(listeners);
     }
 
     @Test
