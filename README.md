@@ -1,7 +1,7 @@
 # buildshield-notification-service
 
 Notificaciones de BuildShield (BobBuilder): bandeja de avisos en la aplicación y correo, alimentados solo por eventos
-de los demás contextos (US43). Contrato de la arquitectura: `wiki/informe-tf/plan-microservicios.md` del proyecto.
+de los demás contextos (US43), con destinatarios configurables por obra (US45). Contrato de la arquitectura: `wiki/informe-tf/plan-microservicios.md` del proyecto.
 
 | Dato | Valor |
 |---|---|
@@ -27,6 +27,12 @@ de los demás contextos (US43). Contrato de la arquitectura: `wiki/informe-tf/pl
   envía `/dispatches/{id}/custody`.
 - Nunca se avisa a quien provocó el evento ni a usuarios desactivados; un evento repetido no duplica avisos
   (`processed_events` y `source_event_id` único por destinatario).
+- **US45:** si el administrador configuró destinatarios para la obra del evento y ese tipo de aviso
+  (`recipient_settings`), sus usuarios reemplazan a los destinatarios por rol de la tabla de arriba. Se vuelve a
+  comprobar al enviar: solo usuarios activos y, si son encargados de obra, asignados a esa obra. Quien abrió la
+  discrepancia sigue recibiendo los avisos de su caso. Sin configuración se aplica la tabla de arriba. Una lista vacía
+  deja el aviso sin destinatarios por rol en esa obra. La obra del evento sale del payload (`worksiteId`) o de
+  `dispatch_projection`.
 - Cada aviso se envía también por correo con `SendGridAdapter` después del commit; en local y en pruebas solo se
   registra en el log (`NOTIFICATION_EMAIL_ENABLED=false`).
 
@@ -37,6 +43,20 @@ de los demás contextos (US43). Contrato de la arquitectura: `wiki/informe-tf/pl
 - `GET /api/v1/notifications/unread-count` → `{"unreadCount"}`
 - `POST /api/v1/notifications/{id}/read` → 204 (404 si no existe o es de otro usuario)
 - `POST /api/v1/notifications/read-all` → 204
+
+## Endpoints de destinatarios (US45, solo ADMINISTRATOR; el gateway ya enruta `/api/v1/notifications/**`)
+
+- `GET /api/v1/notifications/recipient-settings` → configuraciones guardadas
+  `[{"worksiteId","worksiteName","setting":{...}}]`.
+- `GET /api/v1/notifications/recipient-settings/worksites/{worksiteId}` → los ocho tipos de aviso
+  `{"worksiteId","worksiteName","types":[{"type","label","configured","defaultAudience","recipients":[...],
+  "updatedBy","updatedAt"}],"candidates":[{"userId","fullName","email","role","active"}]}`. 404 si la obra no está
+  en `location_projection`.
+- `PUT /api/v1/notifications/recipient-settings/worksites/{worksiteId}/types/{type}` con `{"userIds":[...]}` (hasta
+  50, sin repetidos, puede ser vacía) → 200 con el tipo guardado. 400 `UNKNOWN_RECIPIENT` (usuario inexistente o
+  inactivo), `RECIPIENT_NOT_ASSIGNED` (encargado de obra no asignado a la obra), `TOO_MANY_RECIPIENTS`.
+- `DELETE /api/v1/notifications/recipient-settings/worksites/{worksiteId}/types/{type}` → 204, vuelve a la regla por
+  defecto (repetirlo no falla).
 - OpenAPI en `/api/v1/api-docs` y `/swagger-ui.html` (perfiles local y test).
 
 ## Variables de entorno
@@ -60,5 +80,5 @@ mvn -B verify -Dbuildshield.test.external-database=true
 ```
 
 Las `*IT` usan la base temporal `notification_it` en `127.0.0.1:5433` con el usuario `buildshield_core` y Kafka
-embebido con los cuatro tópicos que consume. Cucumber cubre US43. JaCoCo exige 80 % de líneas en `domain` y
+embebido con los cuatro tópicos que consume. Cucumber cubre US43 y US45. JaCoCo exige 80 % de líneas en `domain` y
 `application`.
