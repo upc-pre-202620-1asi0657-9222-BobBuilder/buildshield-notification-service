@@ -61,7 +61,7 @@ class RoleAuthorizationTest {
     void every_role_uses_its_inbox() throws Exception {
         UUID organization = UUID.randomUUID();
         Notification notification = Notification.create(organization, UUID.randomUUID(),
-                NotificationType.DISPATCH_IN_TRANSIT, "Despacho en camino", "Sale hoy", "/reception/1", null,
+                NotificationType.DISPATCH_IN_TRANSIT, "Despacho en camino", "Sale hoy", "/reception/1",
                 Instant.parse("2026-11-03T13:30:00Z"));
         when(queries.inbox(anyBoolean(), anyInt(), anyInt())).thenReturn(new NotificationQueryService.Inbox(
                 new NotificationPage(List.of(notification), 0, 20, 1), 1));

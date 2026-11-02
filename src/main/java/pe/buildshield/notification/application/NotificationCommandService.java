@@ -342,9 +342,10 @@ public class NotificationCommandService {
         }
         Instant now = clock.instant();
         List<Recipient> targets = audience.recipients();
-        notifications.saveAll(targets.stream().map(recipient -> Notification.create(event.organizationId(),
-                recipient.userId(), type, title, body, linkFor(recipient, link), event.eventId(), now)).toList());
-        sendEmailsAfterCommit(targets, title, body);
+        List<Notification> created = targets.stream().map(recipient -> Notification.create(event.organizationId(),
+                recipient.userId(), type, title, body, linkFor(recipient, link), now)).toList();
+        notifications.saveAll(created);
+        sendEmailsAfterCommit(targets, created, title, body);
         return targets.size();
     }
 
@@ -359,14 +360,30 @@ public class NotificationCommandService {
         return link;
     }
 
-    private void sendEmailsAfterCommit(List<Recipient> targets, String subject, String body) {
-        Runnable send = () -> targets.stream().filter(recipient -> recipient.email() != null).forEach(recipient -> {
-            try {
-                email.send(recipient.email(), subject, body);
-            } catch (RuntimeException ex) {
-                log.warn("No se pudo enviar el correo a {}: {}", recipient.userId(), ex.getMessage());
+    /** Cada intento de correo queda en {@code status}, {@code attempts} y {@code sent_at} del aviso. */
+    private void sendEmailsAfterCommit(List<Recipient> targets, List<Notification> created, String subject,
+            String body) {
+        Runnable send = () -> {
+            for (int i = 0; i < targets.size(); i++) {
+                Recipient recipient = targets.get(i);
+                if (recipient.email() == null) {
+                    continue;
+                }
+                Notification notification = created.get(i);
+                try {
+                    email.send(recipient.email(), subject, body);
+                    notification.markSent(clock.instant());
+                } catch (RuntimeException ex) {
+                    log.warn("No se pudo enviar el correo a {}: {}", recipient.userId(), ex.getMessage());
+                    notification.markFailed();
+                }
+                try {
+                    notifications.recordDelivery(notification);
+                } catch (RuntimeException ex) {
+                    log.warn("No se pudo registrar el envío del aviso {}: {}", notification.id(), ex.getMessage());
+                }
             }
-        });
+        };
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override

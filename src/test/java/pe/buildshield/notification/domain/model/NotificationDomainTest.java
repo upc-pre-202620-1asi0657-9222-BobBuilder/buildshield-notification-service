@@ -17,7 +17,7 @@ class NotificationDomainTest {
     void a_notification_is_read_once_and_keeps_the_first_reading() {
         UUID user = UUID.randomUUID();
         Notification notification = Notification.create(UUID.randomUUID(), user, NotificationType.TRANSIT_INCIDENT,
-                "Incidencia", "Retraso", "/dispatches/1", UUID.randomUUID(), NOW);
+                "Incidencia", "Retraso", "/dispatches/1", NOW);
 
         assertThat(notification.isRead()).isFalse();
         assertThat(notification.belongsTo(user)).isTrue();
@@ -31,18 +31,37 @@ class NotificationDomainTest {
     @Test
     void long_texts_are_cut_to_the_column_size_and_required_fields_are_checked() {
         Notification notification = Notification.create(UUID.randomUUID(), UUID.randomUUID(),
-                NotificationType.DISPATCH_IN_TRANSIT, "t".repeat(200), "b".repeat(600), "/x", null, NOW);
+                NotificationType.DISPATCH_IN_TRANSIT, "t".repeat(200), "b".repeat(600), "/x", NOW);
 
         assertThat(notification.title()).hasSize(Notification.MAX_TITLE).endsWith("…");
         assertThat(notification.body()).hasSize(Notification.MAX_BODY);
-        assertThat(notification.sourceEventId()).isNull();
+        assertThat(notification.status()).isEqualTo(NotificationStatus.PENDING);
+        assertThat(notification.attempts()).isZero();
+        assertThat(notification.sentAt()).isNull();
         assertThatThrownBy(() -> Notification.create(UUID.randomUUID(), null, NotificationType.DISPATCH_IN_TRANSIT,
-                "t", "b", "/x", null, NOW)).isInstanceOf(NullPointerException.class);
+                "t", "b", "/x", NOW)).isInstanceOf(NullPointerException.class);
         Notification restored = Notification.restore(notification.id(), notification.organizationId(),
-                notification.recipientUserId(), notification.type(), "t", "b", "/x", null, NOW, NOW);
+                notification.recipientUserId(), notification.type(), "t", "b", "/x", NotificationStatus.SENT, 1, NOW, NOW, NOW);
         assertThat(restored.isRead()).isTrue();
         assertThat(restored.link()).isEqualTo("/x");
         assertThat(restored.createdAt()).isEqualTo(NOW);
+        assertThat(restored.status()).isEqualTo(NotificationStatus.SENT);
+    }
+
+    @Test
+    void delivery_attempts_are_counted_and_the_last_outcome_wins() {
+        Notification notification = Notification.create(UUID.randomUUID(), UUID.randomUUID(),
+                NotificationType.TRANSIT_INCIDENT, "t", "b", "/x", NOW);
+
+        notification.markFailed();
+        assertThat(notification.status()).isEqualTo(NotificationStatus.FAILED);
+        assertThat(notification.attempts()).isEqualTo(1);
+        assertThat(notification.sentAt()).isNull();
+
+        notification.markSent(NOW.plusSeconds(5));
+        assertThat(notification.status()).isEqualTo(NotificationStatus.SENT);
+        assertThat(notification.attempts()).isEqualTo(2);
+        assertThat(notification.sentAt()).isEqualTo(NOW.plusSeconds(5));
     }
 
     @Test

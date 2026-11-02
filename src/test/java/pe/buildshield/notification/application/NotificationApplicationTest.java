@@ -6,6 +6,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import pe.buildshield.notification.domain.model.Notification;
+import pe.buildshield.notification.domain.model.NotificationStatus;
 import pe.buildshield.notification.domain.model.NotificationType;
 import pe.buildshield.notification.shared.error.ResourceNotFoundException;
 import pe.buildshield.notification.shared.messaging.EventEnvelope;
@@ -77,6 +78,24 @@ class NotificationApplicationTest {
         assertThat(sent.body()).contains("MAN-0001").contains("Almacén Central");
         assertThat(sent.link()).isEqualTo("/reception/" + dispatch);
         assertThat(emails).containsExactly("luis.ramos@obra.pe|Despacho en camino a Torre Norte");
+        assertThat(sent.status()).isEqualTo(NotificationStatus.SENT);
+        assertThat(sent.attempts()).isEqualTo(1);
+        assertThat(sent.sentAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    void a_failed_email_leaves_the_notification_failed_with_one_attempt() throws Exception {
+        NotificationCommandService failing = new NotificationCommandService(store, store, store, settings,
+                (to, subject, body) -> {
+                    throw new IllegalStateException("SendGrid caído");
+                }, clock);
+
+        handle(failing, events.dispatchDeparted(dispatch, almacen, torreNorte, rosa));
+
+        Notification sent = store.notifications.get(0);
+        assertThat(sent.status()).isEqualTo(NotificationStatus.FAILED);
+        assertThat(sent.attempts()).isEqualTo(1);
+        assertThat(sent.sentAt()).isNull();
     }
 
     @Test
@@ -148,6 +167,7 @@ class NotificationApplicationTest {
         assertThat(handle(events.discrepancy("DiscrepancyResponded", UUID.randomUUID(), dispatch, almacen, stranger,
                 rosa, "Ok"))).isEqualTo(1);
         assertThat(store.notifications.get(0).recipientUserId()).isEqualTo(stranger);
+        assertThat(store.notifications.get(0).status()).isEqualTo(NotificationStatus.PENDING);
         assertThat(emails).isEmpty();
     }
 
@@ -206,6 +226,10 @@ class NotificationApplicationTest {
     }
 
     private int handle(String envelope) throws Exception {
+        return handle(commands, envelope);
+    }
+
+    private int handle(NotificationCommandService service, String envelope) throws Exception {
         JsonNode node = json.readTree(envelope);
         EventEnvelope event = new EventEnvelope(UUID.fromString(node.get("eventId").asText()),
                 node.get("eventType").asText(), Instant.parse(node.get("occurredAt").asText()), organization,
@@ -213,6 +237,6 @@ class NotificationApplicationTest {
                 node.get("actorId").isNull() ? null : UUID.fromString(node.get("actorId").asText()), 1,
                 node.get("payload"));
         return TenantContext.callAs(new TenantInfo(organization, TenantContext.SYSTEM_USER_ID, "SYSTEM"),
-                () -> commands.handle(event));
+                () -> service.handle(event));
     }
 }

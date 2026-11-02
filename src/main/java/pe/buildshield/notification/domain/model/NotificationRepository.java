@@ -12,6 +12,9 @@ public interface NotificationRepository {
 
     Notification save(Notification notification);
 
+    /** Guarda estado, intentos y fecha de envío; corre en su propia transacción porque se llama después del commit. */
+    void recordDelivery(Notification notification);
+
     Optional<Notification> findById(UUID id);
 
     NotificationPage findByRecipient(UUID recipientUserId, boolean unreadOnly, int page, int size);

@@ -10,6 +10,8 @@ import pe.buildshield.notification.shared.messaging.IdempotentEventProcessor;
 @Component
 class OrderingEventConsumer {
 
+    private static final String CONSUMER = "OrderingEventConsumer";
+
     private final IdempotentEventProcessor processor;
     private final NotificationCommandService commands;
 
@@ -20,6 +22,6 @@ class OrderingEventConsumer {
 
     @KafkaListener(topics = "${buildshield.messaging.consumes.ordering:buildshield.ordering}")
     void onMessage(ConsumerRecord<String, String> record) {
-        processor.process(record, commands::handle);
+        processor.process(CONSUMER, record, commands::handle);
     }
 }

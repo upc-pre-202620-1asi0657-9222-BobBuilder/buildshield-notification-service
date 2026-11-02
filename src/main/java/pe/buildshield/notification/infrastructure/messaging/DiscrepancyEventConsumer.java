@@ -10,6 +10,8 @@ import pe.buildshield.notification.shared.messaging.IdempotentEventProcessor;
 @Component
 class DiscrepancyEventConsumer {
 
+    private static final String CONSUMER = "DiscrepancyEventConsumer";
+
     private final IdempotentEventProcessor processor;
     private final NotificationCommandService commands;
 
@@ -20,6 +22,6 @@ class DiscrepancyEventConsumer {
 
     @KafkaListener(topics = "${buildshield.messaging.consumes.discrepancy:buildshield.discrepancy}")
     void onMessage(ConsumerRecord<String, String> record) {
-        processor.process(record, commands::handle);
+        processor.process(CONSUMER, record, commands::handle);
     }
 }

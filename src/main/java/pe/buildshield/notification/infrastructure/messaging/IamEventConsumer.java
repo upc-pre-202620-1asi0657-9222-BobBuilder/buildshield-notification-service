@@ -10,6 +10,8 @@ import pe.buildshield.notification.shared.messaging.IdempotentEventProcessor;
 @Component
 class IamEventConsumer {
 
+    private static final String CONSUMER = "IamEventConsumer";
+
     private final IdempotentEventProcessor processor;
     private final NotificationCommandService commands;
 
@@ -20,6 +22,6 @@ class IamEventConsumer {
 
     @KafkaListener(topics = "${buildshield.messaging.consumes.iam:buildshield.iam}")
     void onMessage(ConsumerRecord<String, String> record) {
-        processor.process(record, commands::handle);
+        processor.process(CONSUMER, record, commands::handle);
     }
 }

@@ -6,11 +6,15 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import pe.buildshield.notification.domain.model.Notification;
+import pe.buildshield.notification.domain.model.NotificationStatus;
 import pe.buildshield.notification.domain.model.NotificationType;
 import pe.buildshield.notification.shared.persistence.OrganizationScopedEntity;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 @Entity
@@ -21,27 +25,30 @@ public class NotificationJpaEntity extends OrganizationScopedEntity {
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
 
-    @Column(name = "recipient_user_id", nullable = false, updatable = false)
-    private UUID recipientUserId;
+    @Column(name = "user_id", nullable = false, updatable = false)
+    private UUID userId;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "type", nullable = false, length = 40, updatable = false)
+    @Column(name = "type", nullable = false, length = 30, updatable = false)
     private NotificationType type;
 
-    @Column(name = "title", nullable = false, length = 150, updatable = false)
-    private String title;
+    /** Datos del mensaje: {@code title}, {@code body} y {@code link}. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "payload", nullable = false, updatable = false, columnDefinition = "jsonb")
+    private Map<String, String> payload;
 
-    @Column(name = "body", nullable = false, length = 500, updatable = false)
-    private String body;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 10)
+    private NotificationStatus status;
 
-    @Column(name = "link", nullable = false, length = 200, updatable = false)
-    private String link;
-
-    @Column(name = "source_event_id", updatable = false)
-    private UUID sourceEventId;
+    @Column(name = "attempts", nullable = false)
+    private int attempts;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    @Column(name = "sent_at")
+    private Instant sentAt;
 
     @Column(name = "read_at")
     private Instant readAt;
@@ -51,13 +58,13 @@ public class NotificationJpaEntity extends OrganizationScopedEntity {
 
     NotificationJpaEntity(Notification notification) {
         id = notification.id();
-        recipientUserId = notification.recipientUserId();
+        userId = notification.recipientUserId();
         type = notification.type();
-        title = notification.title();
-        body = notification.body();
-        link = notification.link();
-        sourceEventId = notification.sourceEventId();
+        payload = Map.of("title", notification.title(), "body", notification.body(), "link", notification.link());
+        status = notification.status();
+        attempts = notification.attempts();
         createdAt = notification.createdAt();
+        sentAt = notification.sentAt();
         readAt = notification.readAt();
     }
 
@@ -70,7 +77,7 @@ public class NotificationJpaEntity extends OrganizationScopedEntity {
     }
 
     Notification toDomain() {
-        return Notification.restore(id, getOrganizationId(), recipientUserId, type, title, body, link, sourceEventId,
-                createdAt, readAt);
+        return Notification.restore(id, getOrganizationId(), userId, type, payload.get("title"), payload.get("body"),
+                payload.get("link"), status, attempts, createdAt, sentAt, readAt);
     }
 }

@@ -46,6 +46,11 @@ class InMemoryNotifications implements NotificationRepository, RecipientDirector
     }
 
     @Override
+    public void recordDelivery(Notification notification) {
+        save(notification);
+    }
+
+    @Override
     public Optional<Notification> findById(UUID id) {
         return notifications.stream().filter(n -> n.id().equals(id) && n.organizationId().equals(organization()))
                 .findFirst();

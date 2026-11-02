@@ -4,6 +4,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import pe.buildshield.notification.domain.model.Notification;
 import pe.buildshield.notification.domain.model.NotificationPage;
 import pe.buildshield.notification.domain.model.NotificationRepository;
@@ -40,6 +42,12 @@ class JpaNotificationRepository implements NotificationRepository {
     }
 
     @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordDelivery(Notification notification) {
+        jpa.recordDelivery(notification.id(), notification.status(), notification.attempts(), notification.sentAt());
+    }
+
+    @Override
     public Optional<Notification> findById(UUID id) {
         return jpa.findById(id).map(NotificationJpaEntity::toDomain);
     }
@@ -48,15 +56,15 @@ class JpaNotificationRepository implements NotificationRepository {
     public NotificationPage findByRecipient(UUID recipientUserId, boolean unreadOnly, int page, int size) {
         PageRequest request = PageRequest.of(page, size, NEWEST_FIRST);
         Page<NotificationJpaEntity> found = unreadOnly
-                ? jpa.findByRecipientUserIdAndReadAtIsNull(recipientUserId, request)
-                : jpa.findByRecipientUserId(recipientUserId, request);
+                ? jpa.findByUserIdAndReadAtIsNull(recipientUserId, request)
+                : jpa.findByUserId(recipientUserId, request);
         return new NotificationPage(found.getContent().stream().map(NotificationJpaEntity::toDomain).toList(), page,
                 size, found.getTotalElements());
     }
 
     @Override
     public long countUnread(UUID recipientUserId) {
-        return jpa.countByRecipientUserIdAndReadAtIsNull(recipientUserId);
+        return jpa.countByUserIdAndReadAtIsNull(recipientUserId);
     }
 
     @Override

@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
-/** Aviso en la bandeja de un usuario. Solo cambia una vez: al marcarse como leído. */
+/** Aviso en la bandeja de un usuario. Cambia al marcarse como leído y al registrar el envío por correo. */
 public class Notification {
 
     public static final int MAX_TITLE = 150;
@@ -17,12 +17,15 @@ public class Notification {
     private final String title;
     private final String body;
     private final String link;
-    private final UUID sourceEventId;
+    private NotificationStatus status;
+    private int attempts;
     private final Instant createdAt;
+    private Instant sentAt;
     private Instant readAt;
 
     private Notification(UUID id, UUID organizationId, UUID recipientUserId, NotificationType type, String title,
-            String body, String link, UUID sourceEventId, Instant createdAt, Instant readAt) {
+            String body, String link, NotificationStatus status, int attempts, Instant createdAt, Instant sentAt,
+            Instant readAt) {
         this.id = Objects.requireNonNull(id, "id");
         this.organizationId = Objects.requireNonNull(organizationId, "organizationId");
         this.recipientUserId = Objects.requireNonNull(recipientUserId, "recipientUserId");
@@ -30,21 +33,24 @@ public class Notification {
         this.title = truncate(Objects.requireNonNull(title, "title"), MAX_TITLE);
         this.body = truncate(Objects.requireNonNull(body, "body"), MAX_BODY);
         this.link = Objects.requireNonNull(link, "link");
-        this.sourceEventId = sourceEventId;
+        this.status = Objects.requireNonNull(status, "status");
+        this.attempts = attempts;
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt");
+        this.sentAt = sentAt;
         this.readAt = readAt;
     }
 
     public static Notification create(UUID organizationId, UUID recipientUserId, NotificationType type, String title,
-            String body, String link, UUID sourceEventId, Instant now) {
+            String body, String link, Instant now) {
         return new Notification(UUID.randomUUID(), organizationId, recipientUserId, type, title, body, link,
-                sourceEventId, now, null);
+                NotificationStatus.PENDING, 0, now, null, null);
     }
 
     public static Notification restore(UUID id, UUID organizationId, UUID recipientUserId, NotificationType type,
-            String title, String body, String link, UUID sourceEventId, Instant createdAt, Instant readAt) {
-        return new Notification(id, organizationId, recipientUserId, type, title, body, link, sourceEventId,
-                createdAt, readAt);
+            String title, String body, String link, NotificationStatus status, int attempts, Instant createdAt,
+            Instant sentAt, Instant readAt) {
+        return new Notification(id, organizationId, recipientUserId, type, title, body, link, status, attempts,
+                createdAt, sentAt, readAt);
     }
 
     /** Marca como leída; si ya lo estaba, conserva la primera lectura. */
@@ -52,6 +58,19 @@ public class Notification {
         if (readAt == null) {
             readAt = now;
         }
+    }
+
+    /** Registra un envío por correo exitoso. */
+    public void markSent(Instant now) {
+        attempts++;
+        status = NotificationStatus.SENT;
+        sentAt = now;
+    }
+
+    /** Registra un envío por correo fallido. */
+    public void markFailed() {
+        attempts++;
+        status = NotificationStatus.FAILED;
     }
 
     public boolean isRead() {
@@ -94,12 +113,20 @@ public class Notification {
         return link;
     }
 
-    public UUID sourceEventId() {
-        return sourceEventId;
+    public NotificationStatus status() {
+        return status;
+    }
+
+    public int attempts() {
+        return attempts;
     }
 
     public Instant createdAt() {
         return createdAt;
+    }
+
+    public Instant sentAt() {
+        return sentAt;
     }
 
     public Instant readAt() {
