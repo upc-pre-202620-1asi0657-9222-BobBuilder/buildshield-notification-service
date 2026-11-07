@@ -10,9 +10,12 @@ import org.springframework.data.repository.query.Param;
 import pe.buildshield.notification.domain.model.NotificationStatus;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 interface SpringDataNotificationRepository extends JpaRepository<NotificationJpaEntity, UUID> {
+
+    List<NotificationJpaEntity> findByStatus(NotificationStatus status);
 
     Page<NotificationJpaEntity> findByUserId(UUID recipientUserId, Pageable pageable);
 

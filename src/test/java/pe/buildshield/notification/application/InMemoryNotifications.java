@@ -5,6 +5,7 @@ import pe.buildshield.notification.domain.model.LogisticsDirectory;
 import pe.buildshield.notification.domain.model.Notification;
 import pe.buildshield.notification.domain.model.NotificationPage;
 import pe.buildshield.notification.domain.model.NotificationRepository;
+import pe.buildshield.notification.domain.model.NotificationStatus;
 import pe.buildshield.notification.domain.model.Recipient;
 import pe.buildshield.notification.domain.model.RecipientDirectory;
 import pe.buildshield.notification.shared.tenant.TenantContext;
@@ -80,6 +81,14 @@ class InMemoryNotifications implements NotificationRepository, RecipientDirector
             count++;
         }
         return count;
+    }
+
+    @Override
+    public List<Notification> findPending() {
+        return notifications.stream()
+                .filter(n -> TenantContext.current().map(t -> t.organizationId().equals(n.organizationId())).orElse(true))
+                .filter(n -> n.status() == NotificationStatus.PENDING)
+                .toList();
     }
 
     @Override

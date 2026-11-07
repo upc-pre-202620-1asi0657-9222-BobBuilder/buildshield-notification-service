@@ -43,7 +43,7 @@ public class Notification {
     public static Notification create(UUID organizationId, UUID recipientUserId, NotificationType type, String title,
             String body, String link, Instant now) {
         return new Notification(UUID.randomUUID(), organizationId, recipientUserId, type, title, body, link,
-                NotificationStatus.PENDING, 0, now, null, null);
+            NotificationStatus.PENDING, 0, now, null, null);
     }
 
     public static Notification restore(UUID id, UUID organizationId, UUID recipientUserId, NotificationType type,
@@ -71,6 +71,11 @@ public class Notification {
     public void markFailed() {
         attempts++;
         status = NotificationStatus.FAILED;
+    }
+
+    /** Deja la notificación en estado pendiente para reintento posterior (ej. con circuit breaker abierto). */
+    public void markPending() {
+        status = NotificationStatus.PENDING;
     }
 
     public boolean isRead() {

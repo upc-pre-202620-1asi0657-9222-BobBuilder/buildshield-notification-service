@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import pe.buildshield.notification.domain.model.Notification;
 import pe.buildshield.notification.domain.model.NotificationPage;
 import pe.buildshield.notification.domain.model.NotificationRepository;
+import pe.buildshield.notification.domain.model.NotificationStatus;
 import pe.buildshield.notification.shared.error.ResourceNotFoundException;
 
 import java.time.Instant;
@@ -70,5 +71,10 @@ class JpaNotificationRepository implements NotificationRepository {
     @Override
     public int markAllRead(UUID recipientUserId, Instant now) {
         return jpa.markAllRead(recipientUserId, now);
+    }
+
+    @Override
+    public List<Notification> findPending() {
+        return jpa.findByStatus(NotificationStatus.PENDING).stream().map(NotificationJpaEntity::toDomain).toList();
     }
 }

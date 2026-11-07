@@ -106,6 +106,47 @@ class NotificationMessagingIT {
                 .isEqualTo(1);
     }
 
+    @Test
+    void discrepancy_opened_event_notifies_the_worksite_staff_and_duplicate_is_ignored() {
+        UUID organization = UUID.randomUUID();
+        TestEvents events = new TestEvents(json, organization);
+        UUID luis = UUID.randomUUID();
+        UUID worksite = UUID.randomUUID();
+        UUID almacen = UUID.randomUUID();
+        UUID rosa = UUID.randomUUID();
+        UUID discrepancy = UUID.randomUUID();
+
+        kafka.send("buildshield.iam", luis.toString(), events.user("UserCreated", luis, "Luis Ramos", "SITE_MANAGER", true));
+        kafka.send("buildshield.organization", worksite.toString(), events.location(worksite, "WORKSITE", "Torre Sur"));
+        UUID assignment = UUID.randomUUID();
+        kafka.send("buildshield.organization", assignment.toString(), events.assigned(assignment, luis, worksite, "WORKSITE"));
+
+        await().atMost(Duration.ofSeconds(30)).until(() -> count("assignment_projection") >= 1
+                && count("recipient_projection") >= 1 && count("location_projection") >= 1);
+
+        String opened = events.envelope("DiscrepancyOpened", "DISCREPANCY", discrepancy, rosa,
+                TestEvents.map("discrepancyId", discrepancy, "worksiteId", worksite, "warehouseId", almacen,
+                        "materialName", "Ladrillo King Kong", "sku", "LAD-01", "openedBy", rosa, "reason", "Ladrillos rotos"));
+
+        // Se envía dos veces para probar idempotencia
+        kafka.send("buildshield.discrepancy", discrepancy.toString(), opened);
+        kafka.send("buildshield.discrepancy", discrepancy.toString(), opened);
+
+        await().atMost(Duration.ofSeconds(30)).until(() ->
+                jdbc.queryForObject("SELECT count(*) FROM notifications WHERE organization_id = ? AND type = 'DISCREPANCY_OPENED'",
+                        Long.class, organization) == 1);
+
+        // Se verifica que consumer registrado en processed_events sea NotificationEventConsumer
+        assertThat(jdbc.queryForList("SELECT consumer FROM processed_events WHERE consumer = 'NotificationEventConsumer'",
+                String.class)).contains("NotificationEventConsumer");
+
+        TenantInfo luisSession = new TenantInfo(organization, luis, "SITE_MANAGER");
+        var inbox = TenantContext.callAs(luisSession, () -> queries.inbox(false, 0, 20));
+        assertThat(inbox.page().items()).extracting(n -> n.title())
+                .contains("Discrepancia abierta en Torre Sur");
+        assertThat(inbox.page().items()).anySatisfy(n -> assertThat(n.body()).contains("Ladrillo King Kong").contains("Ladrillos rotos"));
+    }
+
     private long count(String table) {
         Long count = jdbc.queryForObject("SELECT count(*) FROM " + table, Long.class);
         return count == null ? 0 : count;

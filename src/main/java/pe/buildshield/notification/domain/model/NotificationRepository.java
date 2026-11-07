@@ -22,4 +22,7 @@ public interface NotificationRepository {
     long countUnread(UUID recipientUserId);
 
     int markAllRead(UUID recipientUserId, Instant now);
+
+    /** Obtiene las notificaciones en estado PENDING de la organización para reintento de envío. */
+    List<Notification> findPending();
 }

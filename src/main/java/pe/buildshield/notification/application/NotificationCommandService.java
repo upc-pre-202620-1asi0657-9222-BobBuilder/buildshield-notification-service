@@ -1,6 +1,7 @@
 package pe.buildshield.notification.application;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -12,6 +13,7 @@ import pe.buildshield.notification.domain.model.DispatchInfo;
 import pe.buildshield.notification.domain.model.LogisticsDirectory;
 import pe.buildshield.notification.domain.model.Notification;
 import pe.buildshield.notification.domain.model.NotificationRepository;
+import pe.buildshield.notification.domain.model.NotificationTemplate;
 import pe.buildshield.notification.domain.model.NotificationType;
 import pe.buildshield.notification.domain.model.Recipient;
 import pe.buildshield.notification.domain.model.RecipientDirectory;
@@ -47,16 +49,16 @@ import static pe.buildshield.notification.application.NotificationEvents.*;
  *       administradores.</li>
  *   <li>Enlaces: {@code /reception/{dispatchId}}, {@code /discrepancies/{id}} y {@code /dispatches/{id}}; este último
  *       se cambia por {@code /dispatches/{id}/custody} para los encargados de obra.</li>
+ *   <li>Discrepancia abierta: encargados de obra asignados a la obra.</li>
  *   <li>Discrepancia respondida: quien la abrió; escalada: administradores; resuelta o aceptada: encargados de
  *       almacén del almacén de origen y quien la abrió.</li>
+ *   <li>Pedido aprobado: encargados de obra y encargados de almacén.</li>
+ *   <li>Reserva de stock rechazada: encargados de obra y administradores.</li>
+ *   <li>Pago exitoso / fallido / expirado: administradores.</li>
+ *   <li>Recuperación de contraseña: correo al destinatario indicado.</li>
  * </ul>
  *
- * Nunca se avisa a quien provocó el evento. Cada aviso va también por correo después del commit.
- *
- * <p>US45: si el administrador configuró destinatarios para la obra del evento y ese tipo de aviso, sus usuarios
- * (activos; los encargados de obra, solo si siguen asignados a la obra) reemplazan a los destinatarios por rol de la
- * lista anterior. Quien abrió la discrepancia sigue recibiendo los avisos de su caso. Sin configuración, la regla de
- * arriba.
+ * Cada aviso va también por correo después del commit protegido con Circuit Breaker.
  */
 @Service
 public class NotificationCommandService {
@@ -139,6 +141,13 @@ public class NotificationCommandService {
             case RECEPTION_CONFIRMED -> receptionConfirmed(event, payload);
             case DISCREPANCY_RESPONDED, DISCREPANCY_ESCALATED, DISCREPANCY_RESOLVED, DISCREPANCY_ACCEPTED ->
                     discrepancyChanged(event, payload);
+            case DISCREPANCY_OPENED -> discrepancyOpened(event, payload);
+            case ORDER_APPROVED -> orderApproved(event, payload);
+            case STOCK_RESERVATION_REJECTED -> stockReservationRejected(event, payload);
+            case PAYMENT_SUCCEEDED -> paymentSucceeded(event, payload);
+            case PAYMENT_FAILED -> paymentFailed(event, payload);
+            case SUBSCRIPTION_EXPIRED -> subscriptionExpired(event, payload);
+            case PASSWORD_RESET_REQUESTED -> passwordResetRequested(event, payload);
             default -> 0;
         };
     }
@@ -163,20 +172,48 @@ public class NotificationCommandService {
         return notifications.markAllRead(TenantContext.require().userId(), clock.instant());
     }
 
+    /** Reintenta el envío por correo de las notificaciones que quedaron en estado PENDING. */
+    @Transactional
+    public int retryPending() {
+        List<Notification> pending = notifications.findPending();
+        int sentCount = 0;
+        for (Notification notification : pending) {
+            Recipient recipient = recipients.find(notification.organizationId(), notification.recipientUserId()).orElse(null);
+            if (recipient == null || recipient.email() == null) {
+                continue;
+            }
+            try {
+                email.send(recipient.email(), notification.title(), notification.body());
+                notification.markSent(clock.instant());
+                notifications.recordDelivery(notification);
+                sentCount++;
+            } catch (CallNotPermittedException ex) {
+                log.warn("Circuit breaker abierto al reintentar aviso {}: {}", notification.id(), ex.getMessage());
+                break;
+            } catch (RuntimeException ex) {
+                log.warn("No se pudo enviar correo pendiente para aviso {}: {}", notification.id(), ex.getMessage());
+                notification.markFailed();
+                notifications.recordDelivery(notification);
+            }
+        }
+        return sentCount;
+    }
+
     private int dispatchDeparted(EventEnvelope event, JsonNode payload) {
         DispatchInfo dispatch = dispatch(event, payload);
         if (dispatch == null || dispatch.worksiteId() == null) {
             return 0;
         }
-        Audience audience = audience(event, NotificationType.DISPATCH_IN_TRANSIT, dispatch.worksiteId(),
+        Audience audience = audience(event.actorId(), event.organizationId(), NotificationType.DISPATCH_IN_TRANSIT,
+                dispatch.worksiteId(),
                 () -> recipients.assignedTo(event.organizationId(), dispatch.worksiteId(), Recipient.SITE_MANAGER),
                 null);
         String worksite = locationName(event, dispatch.worksiteId(), "la obra");
         String warehouse = locationName(event, dispatch.warehouseId(), "el almacén");
-        return notify(event, audience, NotificationType.DISPATCH_IN_TRANSIT, "Despacho en camino a " + worksite,
-                "El despacho " + dispatch.reference() + " salió de " + warehouse + " hacia " + worksite
-                        + ". Prepárate para recibirlo.",
-                "/reception/" + dispatch.dispatchId());
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.dispatchInTransit(worksite,
+                warehouse, dispatch.reference(), dispatch.dispatchId());
+        return notify(event, audience, NotificationType.DISPATCH_IN_TRANSIT, rendered.title(), rendered.body(),
+                rendered.link());
     }
 
     private int dispatchCancelled(EventEnvelope event, JsonNode payload) {
@@ -184,14 +221,16 @@ public class NotificationCommandService {
         if (dispatch == null || dispatch.worksiteId() == null) {
             return 0;
         }
-        Audience audience = audience(event, NotificationType.DISPATCH_CANCELLED, dispatch.worksiteId(),
+        Audience audience = audience(event.actorId(), event.organizationId(), NotificationType.DISPATCH_CANCELLED,
+                dispatch.worksiteId(),
                 () -> recipients.assignedTo(event.organizationId(), dispatch.worksiteId(), Recipient.SITE_MANAGER),
                 null);
         String reason = text(payload, "reason");
-        return notify(event, audience, NotificationType.DISPATCH_CANCELLED, "Despacho anulado",
-                "El despacho " + dispatch.reference() + " hacia " + locationName(event, dispatch.worksiteId(), "la obra")
-                        + " fue anulado" + (reason == null ? "." : ": " + reason),
-                "/dispatches/" + dispatch.dispatchId());
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.dispatchCancelled(
+                locationName(event, dispatch.worksiteId(), "la obra"), dispatch.reference(), reason,
+                dispatch.dispatchId());
+        return notify(event, audience, NotificationType.DISPATCH_CANCELLED, rendered.title(), rendered.body(),
+                rendered.link());
     }
 
     private int transitIncident(EventEnvelope event, JsonNode payload) {
@@ -199,26 +238,27 @@ public class NotificationCommandService {
         if (dispatch == null) {
             return 0;
         }
-        Audience audience = audience(event, NotificationType.TRANSIT_INCIDENT, dispatch.worksiteId(), () -> {
-            List<Recipient> byDefault = new ArrayList<>();
-            if (dispatch.worksiteId() != null) {
-                byDefault.addAll(recipients.assignedTo(event.organizationId(), dispatch.worksiteId(),
-                        Recipient.SITE_MANAGER));
-            }
-            byDefault.addAll(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
-            return byDefault;
-        }, null);
+        Audience audience = audience(event.actorId(), event.organizationId(), NotificationType.TRANSIT_INCIDENT,
+                dispatch.worksiteId(), () -> {
+                    List<Recipient> byDefault = new ArrayList<>();
+                    if (dispatch.worksiteId() != null) {
+                        byDefault.addAll(recipients.assignedTo(event.organizationId(), dispatch.worksiteId(),
+                                Recipient.SITE_MANAGER));
+                    }
+                    byDefault.addAll(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
+                    return byDefault;
+                }, null);
         String type = text(payload, "typeLabel");
         if (type == null) {
             String code = payload.path("type").asText("OTHER");
             type = INCIDENT_TYPES.getOrDefault(code, code);
         }
         String observation = text(payload, "observation");
-        return notify(event, audience, NotificationType.TRANSIT_INCIDENT, "Incidencia en ruta: " + type,
-                "Despacho " + dispatch.reference() + (dispatch.worksiteId() == null ? ""
-                        : " hacia " + locationName(event, dispatch.worksiteId(), "la obra"))
-                        + (observation == null ? "." : ": " + observation),
-                "/dispatches/" + dispatch.dispatchId());
+        String worksite = dispatch.worksiteId() == null ? null : locationName(event, dispatch.worksiteId(), "la obra");
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.transitIncident(type,
+                dispatch.reference(), worksite, observation, dispatch.dispatchId());
+        return notify(event, audience, NotificationType.TRANSIT_INCIDENT, rendered.title(), rendered.body(),
+                rendered.link());
     }
 
     private int receptionConfirmed(EventEnvelope event, JsonNode payload) {
@@ -232,19 +272,19 @@ public class NotificationCommandService {
         if (outOfTolerance == 0 || dispatch == null) {
             return 0;
         }
-        Audience audience = audience(event, NotificationType.RECEPTION_WITH_DISCREPANCIES, dispatch.worksiteId(),
+        Audience audience = audience(event.actorId(), event.organizationId(),
+                NotificationType.RECEPTION_WITH_DISCREPANCIES, dispatch.worksiteId(),
                 () -> {
                     List<Recipient> byDefault = new ArrayList<>(warehouseManagers(event,
                             dispatch.warehouseId()));
                     byDefault.addAll(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
                     return byDefault;
                 }, null);
-        String materials = outOfTolerance == 1 ? "1 material fuera" : outOfTolerance + " materiales fuera";
-        return notify(event, audience, NotificationType.RECEPTION_WITH_DISCREPANCIES, "Recepción con discrepancias",
-                "La recepción del despacho " + dispatch.reference() + " en "
-                        + locationName(event, dispatch.worksiteId(), "la obra") + " tiene " + materials
-                        + " de la tolerancia.",
-                "/dispatches/" + dispatch.dispatchId());
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.receptionWithDiscrepancies(
+                dispatch.reference(), locationName(event, dispatch.worksiteId(), "la obra"), outOfTolerance,
+                dispatch.dispatchId());
+        return notify(event, audience, NotificationType.RECEPTION_WITH_DISCREPANCIES, rendered.title(),
+                rendered.body(), rendered.link());
     }
 
     private int discrepancyChanged(EventEnvelope event, JsonNode payload) {
@@ -263,42 +303,186 @@ public class NotificationCommandService {
             worksiteId = dispatch == null ? null : dispatch.worksiteId();
         }
         NotificationType type;
-        String title;
         Supplier<List<Recipient>> byDefault;
         Recipient personal = null;
         switch (event.eventType()) {
             case DISCREPANCY_RESPONDED -> {
                 type = NotificationType.DISCREPANCY_RESPONDED;
-                title = "Discrepancia respondida por el almacén";
                 byDefault = List::of;
                 personal = opener(event, openedBy);
             }
             case DISCREPANCY_ESCALATED -> {
                 type = NotificationType.DISCREPANCY_ESCALATED;
-                title = "Discrepancia escalada: requiere tu decisión";
                 byDefault = () -> recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR);
             }
             case DISCREPANCY_RESOLVED -> {
                 type = NotificationType.DISCREPANCY_RESOLVED;
-                title = "Discrepancia resuelta";
                 byDefault = () -> warehouseManagers(event, warehouseId);
                 personal = opener(event, openedBy);
             }
             default -> {
                 type = NotificationType.DISCREPANCY_ACCEPTED;
-                title = "Discrepancia aceptada por la obra";
                 byDefault = () -> warehouseManagers(event, warehouseId);
                 personal = opener(event, openedBy);
             }
         }
-        Audience audience = audience(event, type, worksiteId, byDefault, personal);
+        Audience audience = audience(event.actorId(), event.organizationId(), type, worksiteId, byDefault, personal);
         String material = text(payload, "materialName") != null ? text(payload, "materialName") : text(payload, "sku");
         String manifest = text(payload, "manifestCode");
         String detail = text(payload, "text");
-        String body = (material == null ? "Material" : material)
-                + (manifest == null ? "" : " del despacho " + manifest)
-                + (detail == null ? "." : ": " + detail);
-        return notify(event, audience, type, title, body, "/discrepancies/" + discrepancyId);
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.discrepancy(type, material,
+                manifest, detail, discrepancyId);
+        return notify(event, audience, type, rendered.title(), rendered.body(), rendered.link());
+    }
+
+    private int discrepancyOpened(EventEnvelope event, JsonNode payload) {
+        UUID discrepancyId = uuid(payload, "discrepancyId");
+        if (discrepancyId == null && event.aggregateId() != null) {
+            discrepancyId = parse(event.aggregateId());
+        }
+        if (discrepancyId == null) {
+            return 0;
+        }
+        UUID worksiteId = uuid(payload, "worksiteId");
+        if (worksiteId == null) {
+            DispatchInfo dispatch = dispatch(event, payload);
+            worksiteId = dispatch == null ? null : dispatch.worksiteId();
+        }
+        if (worksiteId == null) {
+            return 0;
+        }
+        final UUID siteId = worksiteId;
+        // Criterio v4: "Una discrepancia abierta genera el aviso a los responsables de esa obra"
+        // Se pasa actorId = null para asegurar que los encargados de la obra reciban el aviso
+        Audience audience = audience(null, event.organizationId(), NotificationType.DISCREPANCY_OPENED, siteId,
+                () -> recipients.assignedTo(event.organizationId(), siteId, Recipient.SITE_MANAGER), null);
+        String worksite = locationName(event, siteId, "la obra");
+        String material = text(payload, "materialName") != null ? text(payload, "materialName") : text(payload, "sku");
+        String reason = text(payload, "reason") != null ? text(payload, "reason") : text(payload, "text");
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.discrepancyOpened(worksite,
+                material, reason, discrepancyId);
+        return notify(event, audience, NotificationType.DISCREPANCY_OPENED, rendered.title(), rendered.body(),
+                rendered.link());
+    }
+
+    private int orderApproved(EventEnvelope event, JsonNode payload) {
+        UUID orderId = uuid(payload, "orderId");
+        if (orderId == null && event.aggregateId() != null) {
+            orderId = parse(event.aggregateId());
+        }
+        if (orderId == null) {
+            return 0;
+        }
+        UUID worksiteId = uuid(payload, "worksiteId");
+        UUID warehouseId = uuid(payload, "warehouseId");
+        final UUID siteId = worksiteId;
+        Audience audience = audience(event.actorId(), event.organizationId(), NotificationType.ORDER_APPROVED, siteId,
+                () -> {
+                    List<Recipient> list = new ArrayList<>();
+                    if (siteId != null) {
+                        list.addAll(recipients.assignedTo(event.organizationId(), siteId, Recipient.SITE_MANAGER));
+                    }
+                    if (warehouseId != null) {
+                        list.addAll(warehouseManagers(event, warehouseId));
+                    }
+                    return list;
+                }, null);
+        String orderCode = text(payload, "orderCode") != null ? text(payload, "orderCode") : text(payload, "orderNumber");
+        String worksite = locationName(event, siteId, "la obra");
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.orderApproved(orderCode, worksite, orderId);
+        return notify(event, audience, NotificationType.ORDER_APPROVED, rendered.title(), rendered.body(), rendered.link());
+    }
+
+    private int stockReservationRejected(EventEnvelope event, JsonNode payload) {
+        UUID orderId = uuid(payload, "orderId");
+        if (orderId == null && event.aggregateId() != null) {
+            orderId = parse(event.aggregateId());
+        }
+        if (orderId == null) {
+            return 0;
+        }
+        UUID worksiteId = uuid(payload, "worksiteId");
+        final UUID siteId = worksiteId;
+        Audience audience = audience(event.actorId(), event.organizationId(), NotificationType.STOCK_RESERVATION_REJECTED,
+                siteId, () -> {
+                    List<Recipient> list = new ArrayList<>();
+                    if (siteId != null) {
+                        list.addAll(recipients.assignedTo(event.organizationId(), siteId, Recipient.SITE_MANAGER));
+                    }
+                    list.addAll(recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR));
+                    return list;
+                }, null);
+        String orderCode = text(payload, "orderCode") != null ? text(payload, "orderCode") : text(payload, "orderNumber");
+        String worksite = locationName(event, siteId, "la obra");
+        String reason = text(payload, "reason") != null ? text(payload, "reason") : text(payload, "observation");
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.stockReservationRejected(orderCode,
+                worksite, reason, orderId);
+        return notify(event, audience, NotificationType.STOCK_RESERVATION_REJECTED, rendered.title(), rendered.body(),
+                rendered.link());
+    }
+
+    private int paymentSucceeded(EventEnvelope event, JsonNode payload) {
+        Audience audience = audience(event.actorId(), event.organizationId(), NotificationType.PAYMENT_SUCCEEDED, null,
+                () -> recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR), null);
+        String plan = text(payload, "plan");
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.paymentSucceeded(plan,
+                event.organizationId());
+        return notify(event, audience, NotificationType.PAYMENT_SUCCEEDED, rendered.title(), rendered.body(),
+                rendered.link());
+    }
+
+    private int paymentFailed(EventEnvelope event, JsonNode payload) {
+        Audience audience = audience(event.actorId(), event.organizationId(), NotificationType.PAYMENT_FAILED, null,
+                () -> recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR), null);
+        String plan = text(payload, "plan");
+        String reason = text(payload, "failureReason") != null ? text(payload, "failureReason") : text(payload, "reason");
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.paymentFailed(plan, reason,
+                event.organizationId());
+        return notify(event, audience, NotificationType.PAYMENT_FAILED, rendered.title(), rendered.body(),
+                rendered.link());
+    }
+
+    private int subscriptionExpired(EventEnvelope event, JsonNode payload) {
+        Audience audience = audience(event.actorId(), event.organizationId(), NotificationType.SUBSCRIPTION_EXPIRED, null,
+                () -> recipients.withRole(event.organizationId(), Recipient.ADMINISTRATOR), null);
+        String plan = text(payload, "plan");
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.subscriptionExpired(plan,
+                event.organizationId());
+        return notify(event, audience, NotificationType.SUBSCRIPTION_EXPIRED, rendered.title(), rendered.body(),
+                rendered.link());
+    }
+
+    private int passwordResetRequested(EventEnvelope event, JsonNode payload) {
+        String toEmail = text(payload, "email");
+        String resetUrl = text(payload, "resetUrl");
+        if (resetUrl == null) {
+            String token = text(payload, "token");
+            if (token != null) {
+                resetUrl = "/reset-password?token=" + token;
+            }
+        }
+        NotificationTemplate.RenderedNotification rendered = NotificationTemplate.passwordReset(resetUrl);
+        UUID userId = uuid(payload, "userId");
+        if (toEmail != null) {
+            try {
+                email.send(toEmail, rendered.title(), rendered.body());
+            } catch (CallNotPermittedException ex) {
+                log.warn("Circuit breaker abierto para SendGrid; correo de recuperación para {} no se envió", toEmail);
+            } catch (RuntimeException ex) {
+                log.warn("No se pudo enviar el correo de recuperación a {}: {}", toEmail, ex.getMessage());
+            }
+        }
+        if (userId != null) {
+            Instant now = clock.instant();
+            Notification notification = Notification.create(event.organizationId(), userId,
+                    NotificationType.PASSWORD_RESET_REQUESTED, rendered.title(), rendered.body(), rendered.link(), now);
+            if (toEmail != null) {
+                notification.markSent(now);
+            }
+            notifications.save(notification);
+            return 1;
+        }
+        return toEmail != null ? 1 : 0;
     }
 
     private List<Recipient> warehouseManagers(EventEnvelope event, UUID warehouseId) {
@@ -310,14 +494,14 @@ public class NotificationCommandService {
      * Destinatarios del aviso: los configurados para la obra y el tipo (US45) o, si no hay configuración, los de la
      * regla por defecto; más la persona directamente involucrada, si la hay. Sin quien provocó el evento.
      */
-    private Audience audience(EventEnvelope event, NotificationType type, UUID worksiteId,
+    private Audience audience(UUID actorId, UUID organizationId, NotificationType type, UUID worksiteId,
             Supplier<? extends Collection<Recipient>> byDefault, Recipient personal) {
-        Audience audience = new Audience(event.actorId());
+        Audience audience = new Audience(actorId);
         var setting = worksiteId == null ? Optional.<RecipientSetting>empty()
-                : settings.find(event.organizationId(), worksiteId, type);
+                : settings.find(organizationId, worksiteId, type);
         if (setting.isPresent()) {
             Set<UUID> chosen = Set.copyOf(setting.get().userIds());
-            audience.add(recipients.candidates(event.organizationId(), worksiteId).stream()
+            audience.add(recipients.candidates(organizationId, worksiteId).stream()
                     .filter(candidate -> chosen.contains(candidate.userId())).toList());
         } else {
             audience.add(byDefault.get());
@@ -373,6 +557,9 @@ public class NotificationCommandService {
                 try {
                     email.send(recipient.email(), subject, body);
                     notification.markSent(clock.instant());
+                } catch (CallNotPermittedException ex) {
+                    log.warn("Circuit breaker abierto para SendGrid; el aviso {} queda en PENDING para reintento", notification.id());
+                    // Permanece en PENDING, attempts = 0
                 } catch (RuntimeException ex) {
                     log.warn("No se pudo enviar el correo a {}: {}", recipient.userId(), ex.getMessage());
                     notification.markFailed();

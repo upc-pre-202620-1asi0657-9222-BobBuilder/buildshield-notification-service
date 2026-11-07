@@ -2,6 +2,8 @@ package pe.buildshield.notification.application;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,6 +98,137 @@ class NotificationApplicationTest {
         assertThat(sent.status()).isEqualTo(NotificationStatus.FAILED);
         assertThat(sent.attempts()).isEqualTo(1);
         assertThat(sent.sentAt()).isNull();
+    }
+
+    @Test
+    void circuit_breaker_open_leaves_notification_pending_and_retry_sends_it() throws Exception {
+        CircuitBreaker cb = CircuitBreaker.ofDefaults("test-sendgrid");
+        cb.transitionToOpenState();
+
+        NotificationCommandService cbService = new NotificationCommandService(store, store, store, settings,
+                (to, subject, body) -> {
+                    if (cb.getState() == CircuitBreaker.State.OPEN) {
+                        throw CallNotPermittedException.createCallNotPermittedException(cb);
+                    }
+                    emails.add(to + "|" + subject);
+                }, clock);
+
+        handle(cbService, events.dispatchDeparted(dispatch, almacen, torreNorte, rosa));
+
+        assertThat(store.notifications).hasSize(1);
+        Notification pending = store.notifications.get(0);
+        assertThat(pending.status()).isEqualTo(NotificationStatus.PENDING);
+        assertThat(pending.attempts()).isZero();
+        assertThat(pending.sentAt()).isNull();
+        assertThat(emails).isEmpty();
+
+        // Tras recuperación de SendGrid se reintentan las pendientes
+        cb.transitionToClosedState();
+        int retried = TenantContext.callAs(new TenantInfo(organization, TenantContext.SYSTEM_USER_ID, "SYSTEM"),
+                cbService::retryPending);
+
+        assertThat(retried).isEqualTo(1);
+        assertThat(pending.status()).isEqualTo(NotificationStatus.SENT);
+        assertThat(pending.attempts()).isEqualTo(1);
+        assertThat(pending.sentAt()).isEqualTo(NOW);
+        assertThat(emails).containsExactly("luis.ramos@obra.pe|Despacho en camino a Torre Norte");
+    }
+
+    @Test
+    void discrepancy_opened_notifies_site_managers_of_the_worksite() throws Exception {
+        UUID discrepancy = UUID.randomUUID();
+        String discrepancyOpened = events.envelope("DiscrepancyOpened", "DISCREPANCY", discrepancy, rosa,
+                TestEvents.map("discrepancyId", discrepancy, "worksiteId", torreNorte, "warehouseId", almacen,
+                        "materialName", "Cemento Portland", "sku", "CEM-001", "manifestCode", "MAN-0001",
+                        "openedBy", rosa, "reason", "Bolsas humedecidas"));
+
+        int created = handle(discrepancyOpened);
+
+        assertThat(created).isEqualTo(1);
+        Notification notif = store.notifications.get(0);
+        assertThat(notif.recipientUserId()).isEqualTo(luis);
+        assertThat(notif.type()).isEqualTo(NotificationType.DISCREPANCY_OPENED);
+        assertThat(notif.title()).isEqualTo("Discrepancia abierta en Torre Norte");
+        assertThat(notif.body()).contains("Cemento Portland").contains("Bolsas humedecidas");
+        assertThat(notif.link()).isEqualTo("/discrepancies/" + discrepancy);
+    }
+
+    @Test
+    void order_approved_notifies_site_and_warehouse_managers() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        String approved = events.envelope("OrderApproved", "ORDER", orderId, ana,
+                TestEvents.map("orderId", orderId, "orderCode", "PED-0042", "worksiteId", torreNorte,
+                        "warehouseId", almacen));
+
+        int created = handle(approved);
+
+        assertThat(created).isEqualTo(2);
+        assertThat(store.notifications).extracting(Notification::recipientUserId).containsExactly(luis, rosa);
+        assertThat(store.notifications.get(0).title()).isEqualTo("Pedido aprobado");
+        assertThat(store.notifications.get(0).body()).contains("PED-0042").contains("Torre Norte");
+        assertThat(store.notifications.get(0).link()).isEqualTo("/orders/" + orderId);
+    }
+
+    @Test
+    void stock_reservation_rejected_notifies_site_managers_and_administrators() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        String rejected = events.envelope("StockReservationRejected", "ORDER", orderId, rosa,
+                TestEvents.map("orderId", orderId, "orderCode", "PED-0042", "worksiteId", torreNorte,
+                        "reason", "Sin stock suficiente de arena fina"));
+
+        int created = handle(rejected);
+
+        assertThat(created).isEqualTo(2);
+        assertThat(store.notifications).extracting(Notification::recipientUserId).containsExactly(luis, ana);
+        assertThat(store.notifications.get(0).title()).isEqualTo("Reserva de stock rechazada");
+        assertThat(store.notifications.get(0).body()).contains("PED-0042").contains("Sin stock suficiente de arena fina");
+        assertThat(store.notifications.get(0).link()).isEqualTo("/orders/" + orderId);
+    }
+
+    @Test
+    void subscription_events_notify_administrators() throws Exception {
+        UUID subId = UUID.randomUUID();
+
+        String paid = events.envelope("PaymentSucceeded", "PAYMENT", subId, null,
+                TestEvents.map("plan", "Pro", "amount", 199.00));
+        assertThat(handle(paid)).isEqualTo(1);
+        assertThat(store.notifications.get(0).recipientUserId()).isEqualTo(ana);
+        assertThat(store.notifications.get(0).title()).isEqualTo("Pago de suscripción exitoso");
+        assertThat(store.notifications.get(0).body()).contains("Pro");
+        assertThat(store.notifications.get(0).link()).isEqualTo("/subscription");
+
+        String failed = events.envelope("PaymentFailed", "PAYMENT", subId, null,
+                TestEvents.map("plan", "Pro", "failureReason", "Tarjeta vencida"));
+        assertThat(handle(failed)).isEqualTo(1);
+        assertThat(store.notifications.get(1).recipientUserId()).isEqualTo(ana);
+        assertThat(store.notifications.get(1).title()).isEqualTo("Fallo en el pago de la suscripción");
+        assertThat(store.notifications.get(1).body()).contains("Tarjeta vencida");
+
+        String expired = events.envelope("SubscriptionExpired", "SUBSCRIPTION", subId, null,
+                TestEvents.map("plan", "Pro"));
+        assertThat(handle(expired)).isEqualTo(1);
+        assertThat(store.notifications.get(2).recipientUserId()).isEqualTo(ana);
+        assertThat(store.notifications.get(2).title()).isEqualTo("Suscripción vencida");
+        assertThat(store.notifications.get(2).body()).contains("Pro");
+    }
+
+    @Test
+    void password_reset_requested_sends_email_and_does_not_block_if_sendgrid_fails() throws Exception {
+        emails.clear();
+        String resetEvent = events.envelope("PasswordResetRequested", "USER", luis, null,
+                TestEvents.map("userId", luis, "email", "luis.ramos@obra.pe",
+                        "resetUrl", "https://app.buildshield.pe/reset?token=abc"));
+
+        int created = handle(resetEvent);
+        assertThat(created).isEqualTo(1);
+        assertThat(emails).containsExactly("luis.ramos@obra.pe|Recuperación de contraseña");
+
+        // Si SendGrid falla, no se bloquea la operación
+        NotificationCommandService failing = new NotificationCommandService(store, store, store, settings,
+                (to, subject, body) -> {
+                    throw new IllegalStateException("SendGrid error");
+                }, clock);
+        assertThat(handle(failing, resetEvent)).isEqualTo(1);
     }
 
     @Test

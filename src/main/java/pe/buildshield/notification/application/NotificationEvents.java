@@ -17,6 +17,13 @@ public final class NotificationEvents {
     public static final String DISCREPANCY_ESCALATED = "DiscrepancyEscalated";
     public static final String DISCREPANCY_RESOLVED = "DiscrepancyResolved";
     public static final String DISCREPANCY_ACCEPTED = "DiscrepancyAccepted";
+    public static final String DISCREPANCY_OPENED = "DiscrepancyOpened";
+    public static final String ORDER_APPROVED = "OrderApproved";
+    public static final String STOCK_RESERVATION_REJECTED = "StockReservationRejected";
+    public static final String PAYMENT_SUCCEEDED = "PaymentSucceeded";
+    public static final String PAYMENT_FAILED = "PaymentFailed";
+    public static final String SUBSCRIPTION_EXPIRED = "SubscriptionExpired";
+    public static final String PASSWORD_RESET_REQUESTED = "PasswordResetRequested";
 
     private NotificationEvents() {
     }

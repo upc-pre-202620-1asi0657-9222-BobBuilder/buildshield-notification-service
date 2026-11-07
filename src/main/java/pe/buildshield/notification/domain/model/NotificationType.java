@@ -15,7 +15,14 @@ public enum NotificationType {
     DISCREPANCY_RESOLVED("Discrepancia resuelta",
             "Encargados de almacén del almacén de origen y quien abrió la discrepancia"),
     DISCREPANCY_ACCEPTED("Discrepancia aceptada",
-            "Encargados de almacén del almacén de origen y quien abrió la discrepancia");
+            "Encargados de almacén del almacén de origen y quien abrió la discrepancia"),
+    DISCREPANCY_OPENED("Discrepancia abierta", "Encargados de obra asignados a la obra"),
+    ORDER_APPROVED("Pedido aprobado", "Encargados de obra y encargados de almacén"),
+    STOCK_RESERVATION_REJECTED("Reserva de stock rechazada", "Encargados de obra y administradores"),
+    PAYMENT_SUCCEEDED("Pago de suscripción exitoso", "Administradores"),
+    PAYMENT_FAILED("Fallo en el pago de suscripción", "Administradores"),
+    SUBSCRIPTION_EXPIRED("Suscripción vencida", "Administradores"),
+    PASSWORD_RESET_REQUESTED("Recuperación de contraseña", "Usuario solicitante");
 
     private final String label;
     private final String defaultAudience;
