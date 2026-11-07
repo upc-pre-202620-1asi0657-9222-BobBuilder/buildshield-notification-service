@@ -1,84 +1,68 @@
 # buildshield-notification-service
 
-Notificaciones de BuildShield (BobBuilder): bandeja de avisos en la aplicación y correo, alimentados solo por eventos
-de los demás contextos (US43), con destinatarios configurables por obra (US45). Contrato de la arquitectura: `wiki/informe-tf/plan-microservicios.md` del proyecto.
+Notificaciones de BuildShield (BobBuilder): bandeja de avisos en la aplicación y envío de correo, alimentados exclusivamente por eventos de integración de los demás contextos (US43), con destinatarios configurables por obra (US45).
+
+Alineado con la arquitectura v4 (`buildshield-presentacion-v4.pdf`, ER pág. 18 y C4 pág. 29).
 
 | Dato | Valor |
 |---|---|
 | Puerto | 8087 |
 | Base | `notification_db` (PostgreSQL 16+) |
-| Paquete | `pe.buildshield.notification` (kernel compartido copiado de iam en `pe.buildshield.notification.shared`) |
-| Publica | nada (sin outbox ni tópico propio) |
-| Consume | `buildshield.iam` (`UserCreated`, `UserUpdated` → `recipient_projection`), `buildshield.organization` (`LocationRegistered`, `LocationUpdated` → `location_projection`; `StaffAssigned`, `StaffUnassigned` → `assignment_projection`), `buildshield.ordering` (`DispatchDeparted`, `DispatchCancelled`, `TransitIncidentReported`, `ReceptionConfirmed`; todo evento con `dispatchId` completa `dispatch_projection`) y `buildshield.discrepancy` (`DiscrepancyResponded`, `DiscrepancyEscalated`, `DiscrepancyResolved`, `DiscrepancyAccepted`) |
+| Paquete | `pe.buildshield.notification` (kernel compartido en `pe.buildshield.notification.shared`) |
+| Publica | Nada (sin outbox ni tópico propio, solo consume) |
+| Consumidor | `NotificationEventConsumer` (tópicos: `buildshield.iam`, `buildshield.organization`, `buildshield.ordering`, `buildshield.inventory`, `buildshield.discrepancy`, `buildshield.subscription`) |
+| Dominio | Agregados `Notification` y `NotificationTemplate` (`Plantilla`) |
+| Correo | `SendGridAdapter` con Circuit Breaker Resilience4j (no bloqueante en fallas o circuito abierto) |
 
-## A quién se avisa
+## Eventos que consume
 
-| Evento | Destinatarios | `link` |
-|---|---|---|
-| `DispatchDeparted` (despacho en tránsito) | encargados de obra asignados a la obra destino | `/reception/{dispatchId}` |
-| `DispatchCancelled` | encargados de obra de la obra destino | `/dispatches/{dispatchId}/custody` |
-| `TransitIncidentReported` | encargados de obra de la obra destino y administradores | `/dispatches/{dispatchId}` (`/custody` para el encargado de obra) |
-| `ReceptionConfirmed` con alguna línea `withinTolerance = false` | encargados de almacén del almacén de origen y administradores | `/dispatches/{dispatchId}` |
-| `DiscrepancyResponded` | quien la abrió (`openedBy`) | `/discrepancies/{id}` |
-| `DiscrepancyEscalated` | administradores | `/discrepancies/{id}` |
-| `DiscrepancyResolved`, `DiscrepancyAccepted` | encargados de almacén del almacén de origen y quien la abrió | `/discrepancies/{id}` |
+| Tópico | Eventos consumidos | Destinatarios por defecto | `link` |
+|---|---|---|---|
+| `buildshield.ordering` | `DispatchDeparted` | Encargados de obra asignados a la obra destino (`SITE_MANAGER`) | `/reception/{dispatchId}` |
+| `buildshield.ordering` | `DispatchCancelled` | Encargados de obra de la obra destino | `/dispatches/{dispatchId}/custody` |
+| `buildshield.ordering` | `TransitIncidentReported` | Encargados de obra de la obra destino y administradores | `/dispatches/{dispatchId}` (`/custody` para encargados de obra) |
+| `buildshield.ordering` | `ReceptionConfirmed` (con líneas fuera de tolerancia) | Encargados de almacén del origen y administradores | `/dispatches/{dispatchId}` |
+| `buildshield.ordering` | `OrderApproved` | Encargados de obra de la obra y encargados de almacén | `/orders/{orderId}` |
+| `buildshield.inventory` | `StockReservationRejected` | Encargados de obra de la obra y administradores | `/orders/{orderId}` |
+| `buildshield.discrepancy` | `DiscrepancyOpened` | Responsables de la obra (`SITE_MANAGER` asignados) | `/discrepancies/{discrepancyId}` |
+| `buildshield.discrepancy` | `DiscrepancyResponded` | Quien abrió la discrepancia (`openedBy`) | `/discrepancies/{discrepancyId}` |
+| `buildshield.discrepancy` | `DiscrepancyEscalated` | Administradores (`ADMINISTRATOR`) | `/discrepancies/{discrepancyId}` |
+| `buildshield.discrepancy` | `DiscrepancyResolved`, `DiscrepancyAccepted` | Encargados de almacén del origen y quien abrió la discrepancia | `/discrepancies/{discrepancyId}` |
+| `buildshield.subscription` | `PaymentSucceeded`, `PaymentFailed`, `SubscriptionExpired` | Administradores (`ADMINISTRATOR`) | `/subscription` |
+| `buildshield.iam` | `PasswordResetRequested` | Correo de recuperación enviado al destinatario vía `EmailPort` | Enlace de restablecimiento |
+| `buildshield.iam` | `UserCreated`, `UserUpdated` | Actualiza copia local de destinatarios (`recipient_projection`) | N/A |
+| `buildshield.organization` | `LocationRegistered`, `LocationUpdated` | Actualiza copia local de obras y almacenes (`location_projection`) | N/A |
+| `buildshield.organization` | `StaffAssigned`, `StaffUnassigned` | Actualiza asignaciones de personal (`assignment_projection`) | N/A |
 
-- Los enlaces son rutas de la web tal cual. El detalle `/dispatches/{id}` no es para el encargado de obra: a él se le
-  envía `/dispatches/{id}/custody`.
-- Nunca se avisa a quien provocó el evento ni a usuarios desactivados; un evento repetido no duplica avisos
-  (`processed_events` y `source_event_id` único por destinatario).
-- **US45:** si el administrador configuró destinatarios para la obra del evento y ese tipo de aviso
-  (`recipient_settings`), sus usuarios reemplazan a los destinatarios por rol de la tabla de arriba. Se vuelve a
-  comprobar al enviar: solo usuarios activos y, si son encargados de obra, asignados a esa obra. Quien abrió la
-  discrepancia sigue recibiendo los avisos de su caso. Sin configuración se aplica la tabla de arriba. Una lista vacía
-  deja el aviso sin destinatarios por rol en esa obra. La obra del evento sale del payload (`worksiteId`) o de
-  `dispatch_projection`.
-- Cada aviso se envía también por correo con `SendGridAdapter` después del commit; en local y en pruebas solo se
-  registra en el log (`NOTIFICATION_EMAIL_ENABLED=false`).
+### Reglas de negocio de avisos
+- Los enlaces son rutas web. El detalle `/dispatches/{id}` se ajusta a `/dispatches/{id}/custody` para el encargado de obra.
+- Nunca se avisa a quien provocó el evento (salvo eventos de alerta general de obra como `DiscrepancyOpened` donde se asegura la notificación a los responsables de la obra).
+- Los eventos duplicados no duplican avisos gracias al consumidor idempotente `NotificationEventConsumer` con la tabla `processed_events (event_id, consumer)`.
+- **US45:** Si el administrador configuró destinatarios para la obra y el tipo de aviso (`notification_preferences`), esos usuarios reemplazan a la regla por defecto.
+- **Resiliencia de correo:** El envío a SendGrid está protegido por `CircuitBreaker`. Si SendGrid falla o el circuito está abierto (`CallNotPermittedException`), la operación **no se bloquea**, la notificación se conserva en estado `PENDING` para reintento posterior (`retryPending()`), o en `FAILED` registrando el intento.
 
-## Endpoints (solo las notificaciones del usuario del token, cualquier rol)
+## Endpoints REST
 
-- `GET /api/v1/notifications?unreadOnly=false&page=0&size=20` →
-  `{"items":[{"id","type","title","body","link","createdAt","readAt"}],"unreadCount","page","size","total"}`
-- `GET /api/v1/notifications/unread-count` → `{"unreadCount"}`
-- `POST /api/v1/notifications/{id}/read` → 204 (404 si no existe o es de otro usuario)
-- `POST /api/v1/notifications/read-all` → 204
+### Bandeja de notificaciones (US43)
+- `GET /api/v1/notifications?unreadOnly=false&page=0&size=20` → Bandeja paginada del usuario autenticado.
+- `GET /api/v1/notifications/unread-count` → Total de avisos no leídos.
+- `POST /api/v1/notifications/{id}/read` → Marca una notificación como leída (404 si pertenece a otro usuario).
+- `POST /api/v1/notifications/read-all` → Marca todas como leídas.
 
-## Endpoints de destinatarios (US45, solo ADMINISTRATOR; el gateway ya enruta `/api/v1/notifications/**`)
+### Destinatarios por obra (US45, rol ADMINISTRATOR)
+- `GET /api/v1/notifications/recipient-settings` → Configuraciones guardadas por obra.
+- `GET /api/v1/notifications/recipient-settings/worksites/{worksiteId}` → Tipos de aviso y candidatos asignables.
+- `PUT /api/v1/notifications/recipient-settings/worksites/{worksiteId}/types/{type}` → Guarda los usuarios asignados.
+- `DELETE /api/v1/notifications/recipient-settings/worksites/{worksiteId}/types/{type}` → Restaura la regla por defecto.
 
-- `GET /api/v1/notifications/recipient-settings` → configuraciones guardadas
-  `[{"worksiteId","worksiteName","setting":{...}}]`.
-- `GET /api/v1/notifications/recipient-settings/worksites/{worksiteId}` → los ocho tipos de aviso
-  `{"worksiteId","worksiteName","types":[{"type","label","configured","defaultAudience","recipients":[...],
-  "updatedBy","updatedAt"}],"candidates":[{"userId","fullName","email","role","active"}]}`. 404 si la obra no está
-  en `location_projection`.
-- `PUT /api/v1/notifications/recipient-settings/worksites/{worksiteId}/types/{type}` con `{"userIds":[...]}` (hasta
-  50, sin repetidos, puede ser vacía) → 200 con el tipo guardado. 400 `UNKNOWN_RECIPIENT` (usuario inexistente o
-  inactivo), `RECIPIENT_NOT_ASSIGNED` (encargado de obra no asignado a la obra), `TOO_MANY_RECIPIENTS`.
-- `DELETE /api/v1/notifications/recipient-settings/worksites/{worksiteId}/types/{type}` → 204, vuelve a la regla por
-  defecto (repetirlo no falla).
-- OpenAPI en `/api/v1/api-docs` y `/swagger-ui.html` (perfiles local y test).
+OpenAPI disponible en `/api/v1/api-docs` y `/swagger-ui.html`.
 
-## Variables de entorno
-
-`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `KAFKA_BOOTSTRAP_SERVERS` (por defecto `localhost:9092`),
-`BUILDSHIELD_JWT_PUBLIC_KEY`, `NOTIFICATION_EMAIL_ENABLED` y `NOTIFICATION_EMAIL_FROM`. Perfiles `local`, `test` y
-`prod`.
-
-## Ejecutar en local (clúster PostgreSQL 127.0.0.1:5433 con autenticación trust)
+## Ejecución de Pruebas
 
 ```bash
-mvn -B package -DskipTests
-BUILDSHIELD_JWT_PUBLIC_KEY="$(cat ~/.buildshield/jwt-public.pem)" \
-java -jar target/buildshield-notification-service-0.1.0-SNAPSHOT.jar --spring.profiles.active=local
+# Pruebas unitarias y de arquitectura (ArchUnit)
+.\mvnw.cmd test
+
+# Pruebas completas de integración (*IT), Cucumber y JaCoCo con base externa
+.\mvnw.cmd verify -Dbuildshield.test.external-database=true
 ```
-
-## Pruebas
-
-```bash
-mvn -B verify -Dbuildshield.test.external-database=true
-```
-
-Las `*IT` usan la base temporal `notification_it` en `127.0.0.1:5433` con el usuario `buildshield_core` y Kafka
-embebido con los cuatro tópicos que consume. Cucumber cubre US43 y US45. JaCoCo exige 80 % de líneas en `domain` y
-`application`.
