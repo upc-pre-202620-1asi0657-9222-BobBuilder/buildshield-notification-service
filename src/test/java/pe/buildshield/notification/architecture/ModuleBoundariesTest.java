@@ -28,6 +28,10 @@ class ModuleBoundariesTest {
     static final ArchRule shared_kernel_does_not_depend_on_the_service =
             ArchitectureRules.sharedKernelIsIndependent(SERVICE_PACKAGE);
 
+    @ArchTest
+    static final ArchRule controllers_do_not_access_repositories =
+            ArchitectureRules.controllersDoNotAccessRepositories(SERVICE_PACKAGE);
+
     /**
      * Comprueba que las reglas detectan violaciones reales usando clases de ejemplo,
      * para no confiar en reglas que pasan solo porque todavía no hay código.
@@ -55,6 +59,15 @@ class ModuleBoundariesTest {
             assertThat(result.hasViolation()).isTrue();
             assertThat(result.getFailureReport().getDetails())
                     .anyMatch(line -> line.contains("SpringAwareEntity"));
+        }
+
+        @Test
+        void detects_interfaces_accessing_repositories() {
+            EvaluationResult result = ArchitectureRules.controllersDoNotAccessRepositories(FIXTURES).evaluate(fixtures);
+
+            assertThat(result.hasViolation()).isTrue();
+            assertThat(result.getFailureReport().getDetails())
+                    .anyMatch(line -> line.contains("ViolatingController") && line.contains("AlphaRepository"));
         }
     }
 }
